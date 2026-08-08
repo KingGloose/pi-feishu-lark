@@ -13,6 +13,7 @@ import { Scheduler } from "./scheduler.js";
 import { FeishuDelivery } from "./delivery.js";
 import { acquireGatewayLock, gatewayLockPath, readGatewayOwner, type GatewayLockHandle, type GatewayOwner } from "./gateway-lock.js";
 import { FeishuMessageHandler } from "./message-handler.js";
+import { ClarifyManager, type ClarifyOption } from "./clarify.js";
 import { runSetup, uiConfirm } from "./setup.js";
 import { buildCardKitCardJson } from "./card-builder.js";
 import { buildReplyCard, parseStopTaskActionValue } from "./reply-card.js";
@@ -42,6 +43,21 @@ export default function feishuExtension(pi: ExtensionAPI) {
   const conversations = new ConversationManager(process.cwd(), bridge);
   let scheduler: Scheduler | undefined;
   const messageHandler = new FeishuMessageHandler(conversations, () => transport, bridgeStore);
+
+  // 交互澄清：ask_feishu 工具 + 卡片回调。transport 延迟获取（启动后才有）。
+  const clarify = new ClarifyManager({
+    async sendCard(chatId, card) {
+      const t = transport;
+      if (!t) throw new Error("飞书未连接");
+      return t.sendCardToChat(chatId, card);
+    },
+    async updateCard(messageId, card) {
+      const t = transport;
+      if (!t) return;
+      await t.updateCard(messageId, card);
+    },
+  });
+  registerAskFeishuTool(pi, clarify, bridgeStore);
 
   const STATUS_KEY = "feishu-connection";
   const STATUS_REFRESH_MS = 2_000;
@@ -153,6 +169,28 @@ export default function feishuExtension(pi: ExtensionAPI) {
       }
     });
     transport = new FeishuTransport(cfg, (msg) => messageHandler.handle(msg), async (action) => {
+      // 澄清卡回调：value 携带 clarify_id + action.option 携带选择值
+      const clarifyId = (action.value as any)?.clarify_id || (action.value as any)?.clarifyId;
+      if (clarifyId) {
+        const choice = (action as any).option ?? (action as any).select ?? "";
+        const handled = await clarify.handleAction({
+          clarifyId: String(clarifyId),
+          choice: String(choice),
+          messageId: action.messageId,
+        });
+        if (handled) {
+          // 选完更新卡片：问题区改成「已选择」，去掉下拉框（用回调返回 2.0 卡）
+          debugLog("feishu.clarify.card_handled", { clarifyId, choice });
+          return {
+            schema: "2.0",
+            body: {
+              elements: [
+                { tag: "markdown", content: `✅ 已收到你的选择：**${choice}**` },
+              ],
+            },
+          };
+        }
+      }
       const copy = parseCopyMarkdownActionValue(action.value);
       if (copy) {
         const source = transport?.getMarkdownCopySource(copy.copySourceId);
@@ -704,6 +742,53 @@ function registerFeishuConfigTools(pi: ExtensionAPI) {
           .filter(Boolean)
           .join("\n"),
       );
+    },
+  });
+}
+
+/** ask_feishu 工具：发选择卡等用户在飞书点选。AI 的「询问」= 一次工具调用。 */
+function registerAskFeishuTool(
+  pi: ExtensionAPI,
+  clarify: ClarifyManager,
+  bridgeStore: FeishuBridgeStore,
+) {
+  pi.registerTool({
+    name: "ask_feishu",
+    label: "Ask Feishu User",
+    description:
+      "通过飞书选择卡向用户澄清问题并等待其点选（超时约 5 分钟）。仅当对话通过飞书远程进行时使用；本机 TUI 终端会话请改用 questionnaire。",
+    promptSnippet: "Need a decision/choice from the Feishu user; send an interactive select card and wait.",
+    parameters: Type.Object({
+      question: Type.String({ description: "要澄清的问题" }),
+      choices: Type.Array(Type.String({ description: "选项（纯文本，最多 6 个）" }), {
+        description: "选项列表",
+      }),
+    }),
+    async execute(_toolCallId, params: { question: string; choices: string[] }) {
+      if (clarify.hasPending) {
+        return textToolResult("已有等待中的澄清请求，先处理完那个。");
+      }
+      const chatId = bridgeStore.latestChatId();
+      if (!chatId) {
+        return textToolResult("没有活跃的飞书聊天（还没收到过消息）。");
+      }
+      const choices = (params.choices || []).slice(0, 6);
+      if (!params.question || !choices.length) {
+        return textToolResult("缺少 question 或 choices 参数。");
+      }
+      const options: ClarifyOption[] = choices.map((c, i) => ({
+        value: String(i + 1),
+        label: c,
+      }));
+      try {
+        const choice = await clarify.ask(chatId, params.question, options, 300_000);
+        const label = options.find((o) => o.value === choice)?.label ?? choice;
+        return textToolResult(`用户选择：${label}（${choice}）`);
+      } catch (error) {
+        return textToolResult(
+          `澄清未完成：${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
     },
   });
 }

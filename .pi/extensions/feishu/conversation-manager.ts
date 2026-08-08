@@ -212,6 +212,27 @@ export class ConversationManager {
     }
   }
 
+  /** /session 用：会话元信息（消息数/名称/会话文件/token） */
+  async getSessionInfo(key: string) {
+    try {
+      const session = await this.getSession(key);
+      const anySession = session as any;
+      const messages = Array.isArray(session.messages) ? session.messages.length : null;
+      const ctx = await this.getContextStatus(key);
+      return {
+        name: (anySession.name as string)?.trim() || null,
+        sessionFile: this.state.sessions[key] || null,
+        messages,
+        tokens: ctx?.tokens ?? null,
+        contextWindow: ctx?.contextWindow ?? null,
+        percent: ctx?.percent ?? null,
+        model: anySession.model?.id || null,
+      };
+    } catch {
+      return null;
+    }
+  }
+
   async stopConversation(key: string, onReply: (text: string) => Promise<void>, runId?: string): Promise<StopConversationResult> {
     const active = this.activeRuns.get(key);
     if (!active) {
@@ -275,6 +296,42 @@ export class ConversationManager {
       }
       this.sessions.delete(key);
       await onReply("已重新加载 skills/工具。会话历史保留，下一条消息生效。");
+    }).catch(async (error) => {
+      await onReply(`Pi error: ${error instanceof Error ? error.message : String(error)}`);
+    });
+    this.queues.set(key, next);
+    await next;
+  }
+
+  /** 上下文压缩：调 session.compact() 压缩历史，省 token。不丢会话。 */
+  async compactConversation(key: string, onReply: (text: string) => Promise<void>) {
+    const previous = this.previousTurn(key);
+    const next = previous.then(async () => {
+      const cached = this.sessions.get(key);
+      if (!cached) {
+        await onReply("当前没有活动会话，无法压缩。");
+        return;
+      }
+      try {
+        const session = await cached;
+        if (session.isCompacting) {
+          await onReply("已经在压缩中，等它完成。");
+          return;
+        }
+        await onReply("正在压缩上下文…（完成后通知你）");
+        const result = await session.compact();
+        debugLog("feishu.compact.done", {
+          key,
+          tokensBefore: result?.tokensBefore ?? undefined,
+          estimatedTokensAfter: result?.estimatedTokensAfter ?? undefined,
+        });
+        const saved = result?.tokensBefore != null && result?.estimatedTokensAfter != null
+          ? `（${result.tokensBefore} → ${result.estimatedTokensAfter} tokens）`
+          : "";
+        await onReply(`✅ 上下文压缩完成${saved}。`);
+      } catch (error) {
+        await onReply(`压缩失败：${error instanceof Error ? error.message : String(error)}`);
+      }
     }).catch(async (error) => {
       await onReply(`Pi error: ${error instanceof Error ? error.message : String(error)}`);
     });

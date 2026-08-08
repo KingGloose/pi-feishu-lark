@@ -534,6 +534,18 @@ export class FeishuTransport {
     return id;
   }
 
+  /** 发卡到指定 chat（用于澄清卡等主动消息），返回 message_id */
+  async sendCardToChat(chatId: string, card: object) {
+    debugLog("feishu.send.card", { chatId });
+    const res = await this.apiCall("feishu.send.card", () => this.sdkClient.im.message.create({
+      params: { receive_id_type: "chat_id" },
+      data: { receive_id: chatId, msg_type: "interactive", content: JSON.stringify(card) },
+    }));
+    const id = (res as any)?.data?.message_id as string | undefined;
+    this.rememberBotOutboundMessageId(id);
+    return id;
+  }
+
   async updateCard(messageId: string, card: object) {
     debugLog("feishu.update.card", { messageId });
     await this.sdkClient.im.v1.message.patch({

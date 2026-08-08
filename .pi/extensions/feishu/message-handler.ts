@@ -262,6 +262,39 @@ export class FeishuMessageHandler {
       return true;
     }
 
+    if (command.name === "compact") {
+      await this.conversations.compactConversation(key, async (reply) => {
+        await transport.replyText(msg.messageId, reply);
+      });
+      return true;
+    }
+
+    if (command.name === "session") {
+      const info = await this.conversations.getSessionInfo(key);
+      if (!info) {
+        await transport.replyText(msg.messageId, "无法读取会话信息（可能还没建立会话）。");
+        return true;
+      }
+      const fmtTokens = (n: number | null) => {
+        if (n == null) return "—";
+        if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+        if (n >= 1_000) return `${(n / 1_000).toFixed(0)}k`;
+        return `${n}`;
+      };
+      const lines = [
+        "📇 会话信息",
+        "",
+        `名称：${info.name || "（未命名）"}`,
+        `模型：${info.model || "—"}`,
+        `消息数：${info.messages ?? "—"}`,
+        `上下文：${info.tokens != null ? `${(info.percent ?? 0).toFixed(1)}%` : "—"} / ${fmtTokens(info.contextWindow)}`,
+        `已用：${fmtTokens(info.tokens)} tokens`,
+      ];
+      if (info.sessionFile) lines.push("", `会话文件：${info.sessionFile}`);
+      await transport.replyText(msg.messageId, lines.join("\n"));
+      return true;
+    }
+
     if (command.name === "model") {
       const models = await this.conversations.getAvailableModels();
       if (!models.length) {

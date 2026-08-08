@@ -33,6 +33,17 @@ export class FeishuBridgeStore {
     return this.read().routes[sessionKey];
   }
 
+  /** 最近活跃的 chat（供 ask_feishu 主动发卡用） */
+  latestChatId(): string | undefined {
+    const routes = this.read().routes;
+    let best: FeishuRoute | undefined;
+    for (const route of Object.values(routes)) {
+      if (!route?.chatId) continue;
+      if (!best || (route.updatedAt || 0) > (best.updatedAt || 0)) best = route;
+    }
+    return best?.chatId;
+  }
+
   bindJob(sessionKey: string, jobId: string, jobName?: string, sessionId?: string): FeishuJobRoute | undefined {
     const state = this.read();
     const route = state.routes[sessionKey];

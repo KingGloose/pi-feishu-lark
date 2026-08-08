@@ -96,12 +96,14 @@ export class ReplyCard implements ReplyCardSink {
   private readonly startedAt = Date.now();
   private usage: { input?: number; output?: number; cacheRead?: number; reasoning?: number } | null = null;
   private sessionId: string | undefined;
-  private cardkit: CardKitStream | undefined;
+  private cardkits: CardKitStream[] = [];
   private fallbackCardId: string | undefined;
   private readonly streamOpts: ReturnType<typeof resolveStreamOptions>;
   private readonly key: string;
   private readonly replyToMessageId: string;
   private readonly transport: ReplyCardTransport;
+  /** 长回答续卡：超过单卡上限自动开下一张卡 */
+  private readonly maxBodyChars: number;
 
   constructor(
     key: string,
@@ -113,6 +115,10 @@ export class ReplyCard implements ReplyCardSink {
     this.replyToMessageId = replyToMessageId;
     this.transport = transport;
     this.streamOpts = resolveStreamOptions(streamOptions);
+    this.maxBodyChars = Math.max(
+      2000,
+      loadConfig()?.streamMaxBodyChars ?? 12000,
+    );
   }
 
   get messageId() {
@@ -146,33 +152,7 @@ export class ReplyCard implements ReplyCardSink {
   async start() {
     const cfg = loadConfig();
     if (this.streamOpts.enabled && cfg?.appId && cfg?.appSecret) {
-      this.cardkit = new CardKitStream(
-        cfg.appId,
-        cfg.appSecret,
-        cfg.domain === "lark" ? "lark" : "feishu",
-        this.replyToMessageId,
-        async (text) => {
-          // CardKit 失败：回落为普通最终卡片
-          const id = await this.transport.replyCard(
-            this.replyToMessageId,
-            buildReplyCard({
-              key: this.key,
-              runId: this.runId,
-              status: "done",
-              body: text,
-            }),
-          );
-          this.fallbackCardId = id;
-        },
-        {
-          printFrequencyMs: this.streamOpts.printFrequencyMs,
-          printStep: this.streamOpts.printStep,
-          pushIntervalMs: this.streamOpts.pushIntervalMs,
-          conversationKey: this.key,
-          runId: this.runId,
-          onOutboundMessageId: (id) => this.transport.rememberOutboundMessageId?.(id),
-        },
-      );
+      this.cardkits.push(this.newCardKit());
       debugLog("feishu.reply_card.cardkit_ready", {
         key: this.key,
         runId: this.runId,
@@ -205,13 +185,75 @@ export class ReplyCard implements ReplyCardSink {
   append(delta: string) {
     if (this.status !== "running" || !delta) return;
     this.body += delta;
-    this.cardkit?.append(delta);
+    // 长回答续卡：当前卡内容超限 → 关掉当前卡，开下一张继续
+    if (this.cardkits.length > 0 && this.body.length > this.maxBodyChars) {
+      const over = this.body.length - this.maxBodyChars;
+      if (over > 2000) {
+        // 超出的足够多才续卡（避免频繁开关卡）
+        const current = this.cardkits[this.cardkits.length - 1];
+        void current?.close(this.body.slice(0, this.maxBodyChars), "done")
+          .catch(() => {});
+        this.cardkits.push(this.newCardKit());
+        this.body = this.body.slice(this.maxBodyChars);
+        debugLog("feishu.reply_card.rollover", {
+          key: this.key,
+          cardIndex: this.cardkits.length,
+        });
+      }
+    }
+    const current = this.cardkits[this.cardkits.length - 1];
+    current?.append(delta);
+  }
+
+  /** 新建一张 CardKit 流式卡（续卡复用） */
+  private newCardKit(): CardKitStream {
+    const cfg = loadConfig()!;
+    return new CardKitStream(
+      cfg.appId!,
+      cfg.appSecret!,
+      cfg.domain === "lark" ? "lark" : "feishu",
+      this.replyToMessageId,
+      async (text) => {
+        // CardKit 失败：先尝试普通最终卡片，再失败则纯文本必达。
+        try {
+          const id = await this.transport.replyCard(
+            this.replyToMessageId,
+            buildReplyCard({
+              key: this.key,
+              runId: this.runId,
+              status: "done",
+              body: text,
+            }),
+          );
+          this.fallbackCardId = id;
+        } catch (cardError) {
+          debugLog("feishu.reply_card.fallback_static_failed", {
+            error: cardError instanceof Error ? cardError.message : String(cardError),
+          });
+          try {
+            await this.transport.replyPlainText?.(this.replyToMessageId, text);
+          } catch (textError) {
+            debugLog("feishu.reply_card.fallback_text_failed", {
+              error: textError instanceof Error ? textError.message : String(textError),
+            });
+          }
+        }
+      },
+      {
+        printFrequencyMs: this.streamOpts.printFrequencyMs,
+        printStep: this.streamOpts.printStep,
+        pushIntervalMs: this.streamOpts.pushIntervalMs,
+        conversationKey: this.key,
+        runId: this.runId,
+        onOutboundMessageId: (id) => this.transport.rememberOutboundMessageId?.(id),
+      },
+    );
   }
 
   ensureFinal(text: string) {
     if (!text) return;
     if (!this.body.trim() || text.length >= this.body.length) this.body = text;
-    this.cardkit?.ensureFinal(text);
+    for (const ck of this.cardkits) ck.ensureFinal(text);
   }
 
   async stopImmediately(note = "已停止") {
@@ -235,10 +277,22 @@ export class ReplyCard implements ReplyCardSink {
     this.status = status;
     this.note = note ?? defaultFinalNote(status);
 
-    if (this.cardkit) {
-      // 同一张 CardKit 卡上关闭流式并更新 header（回复/已停止/出错了）
-      // 传 note（耗时/token）让 done 分支显示在正文下方
-      await this.cardkit.close(this.body, status === "failed" ? "failed" : status === "stopped" ? "stopped" : "done", this.note);
+    if (this.cardkits.length > 0) {
+      // 关闭所有卡：最后一张传完整 body + note，前面的传各自截断内容
+      const lastIdx = this.cardkits.length - 1;
+      for (let i = 0; i < lastIdx; i += 1) {
+        await this.cardkits[i].close(undefined, status === "failed" ? "failed" : status === "stopped" ? "stopped" : "done")
+          .catch(() => {});
+      }
+      const last = this.cardkits[lastIdx];
+      const finalStatus = status === "failed" ? "failed" : status === "stopped" ? "stopped" : "done";
+      await last.close(
+        // 最后一张卡的内容：续卡模式下 body 是最后一段；非续卡是全文
+        this.body,
+        finalStatus,
+        // 只有单卡时才显示完整 note（耗时/token），多卡时第一张已带
+        this.cardkits.length === 1 ? this.note : this.note,
+      );
       return;
     }
 

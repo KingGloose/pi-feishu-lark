@@ -11,6 +11,8 @@ export type BotCommand =
   | { name: "commands" }
   | { name: "daily" }
   | { name: "reload" }
+  | { name: "compact" }
+  | { name: "session" }
   | { name: "config"; key?: string; value?: string; clearTarget?: string };
 
 type PostBody = {
@@ -146,6 +148,8 @@ export function parseBotCommand(text: string): BotCommand | undefined {
   if (normalized === "/help") return { name: "commands" };
   if (normalized === "/daily") return { name: "daily" };
   if (normalized === "/reload") return { name: "reload" };
+  if (normalized === "/compact") return { name: "compact" };
+  if (normalized === "/session") return { name: "session" };
   const workspaceMatch = trimmed.match(/^\/workspace(?:\s+(.+))?$/s);
   if (workspaceMatch) {
     return { name: "workspace", path: workspaceMatch[1]?.trim() };
@@ -180,6 +184,8 @@ export function getCommandList(): string {
     "/help — 显示命令列表（同 /commands）",
     "/daily — 手动触发日报生成（跳过时间检查）",
     "/reload — 重新加载 skills/工具（保留会话历史，下次消息生效）",
+    "/compact — 压缩上下文，省 token",
+    "/session — 查看会话元信息（名称/ID/token/上下文占比）",
   ].join("\n");
 }
 

@@ -1,0 +1,137 @@
+/**
+ * 交互澄清：AI 调 ask_feishu 工具 → 发一张选择卡 → 等用户在飞书点选 → 返回选择。
+ *
+ * 原理（回答「AI 为什么能询问」）：
+ *   agent 调 ask_feishu 工具 = 一次普通工具调用。工具内发卡 + Promise 挂起
+ *   （不 resolve），飞书用户点选卡片 → 卡片回调带着 clarify_id + 选择值回到
+ *   扩展 → resolve Promise → 工具返回「用户选择了 X」→ agent 继续干活。
+ *
+ * 卡片：schema 2.0（与 CardKit 一致，回调返回也走 2.0 避免 200830/200671）。
+ * 元素：问题 markdown + 选项列表 + select_static 下拉框（value 携带 clarify_id）。
+ */
+import { debugLog } from "./debug.js";
+
+export interface ClarifyOption {
+  value: string;
+  label: string;
+  description?: string;
+}
+
+interface Pending {
+  id: string;
+  options: ClarifyOption[];
+  resolve: (choice: string) => void;
+  reject: (error: Error) => void;
+  timer: ReturnType<typeof setTimeout>;
+  settled: boolean;
+}
+
+type ClarifyTransport = {
+  /** 发一张卡，返回 message_id */
+  sendCard(chatId: string, card: object): Promise<string | undefined>;
+  /** 更新一张卡（选完/超时后改写摘要） */
+  updateCard(messageId: string, card: object): Promise<void>;
+};
+
+const QUESTION_ELEMENT_ID = "clarify-question";
+const SELECT_ELEMENT_ID = "clarify-select";
+
+export class ClarifyManager {
+  private pending: Pending | null = null;
+  private readonly transport: ClarifyTransport;
+
+  constructor(transport: ClarifyTransport) {
+    this.transport = transport;
+  }
+
+  get hasPending(): boolean {
+    return this.pending != null;
+  }
+
+  /** 发起澄清：发卡 + 挂起等用户点选 */
+  async ask(
+    chatId: string,
+    question: string,
+    options: ClarifyOption[],
+    timeoutMs = 300_000,
+  ): Promise<string> {
+    if (this.hasPending) throw new Error("已有一个等待中的澄清请求");
+    const id = `clarify-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const messageId = await this.transport.sendCard(chatId, this.buildCard(id, question, options));
+    if (!messageId) throw new Error("澄清卡片发送失败");
+
+    return new Promise<string>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        void this.finish("timeout", new Error("澄清请求超时"));
+      }, timeoutMs);
+      this.pending = { id, options, resolve, reject, timer, settled: false };
+      debugLog("feishu.clarify.asked", { id, options: options.length, timeoutMs });
+    });
+  }
+
+  /** 卡片回调入口：匹配 clarify_id + 选择值 → resolve */
+  async handleAction(action: { clarifyId: string; choice: string; messageId?: string }): Promise<boolean> {
+    const pending = this.pending;
+    if (!pending || pending.settled || pending.id !== action.clarifyId) return false;
+    const label = pending.options.find((o) => o.value === action.choice)?.label ?? action.choice;
+    await this.finish("submitted", undefined, action.choice, label);
+    return true;
+  }
+
+  /** 会话关闭/中止时释放 */
+  abort() {
+    if (this.pending) void this.finish("aborted", new Error("澄清请求已取消"));
+  }
+
+  private async finish(
+    status: "submitted" | "timeout" | "aborted",
+    error?: Error,
+    choice?: string,
+    label?: string,
+  ) {
+    const pending = this.pending;
+    if (!pending || pending.settled) return;
+    pending.settled = true;
+    clearTimeout(pending.timer);
+    this.pending = null;
+    debugLog("feishu.clarify.finished", { status, choice: choice ?? "" });
+    if (error) pending.reject(error);
+    else pending.resolve(choice ?? "");
+  }
+
+  /** schema 2.0 澄清卡：问题 + A/B/C 选项 + 下拉框 */
+  private buildCard(id: string, question: string, options: ClarifyOption[]): object {
+    const letters = ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J"];
+    return {
+      schema: "2.0",
+      body: {
+        elements: [
+          {
+            tag: "markdown",
+            element_id: QUESTION_ELEMENT_ID,
+            content: question,
+            text_size: "title_2",
+          },
+          { tag: "hr" },
+          ...options.map((option, index) => ({
+            tag: "markdown",
+            content: option.description
+              ? `**${letters[index]}. ${option.label}** — ${option.description}`
+              : `**${letters[index]}. ${option.label}**`,
+            text_size: "notation",
+          })),
+          {
+            tag: "select_static",
+            element_id: SELECT_ELEMENT_ID,
+            options: options.map((option, index) => ({
+              value: option.value,
+              text: { tag: "plain_text", content: `${letters[index]}. ${option.label}` },
+            })),
+            placeholder: { tag: "plain_text", content: "请选择…" },
+            value: { clarify_id: id },
+          },
+        ],
+      },
+    };
+  }
+}
