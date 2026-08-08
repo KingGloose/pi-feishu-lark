@@ -576,16 +576,35 @@ export default function feishuExtension(pi: ExtensionAPI) {
 
   if (bootConfig?.autoStart !== false) {
     // 主进程直接连飞书(不拉 daemon)。终端关 = 进程停 = 全停。
-    start().then((result) => {
-      if (typeof result === "object" && result.status === "owned") {
-        console.error("[feishu] existing owner, exiting:", formatOwner(result.owner));
-        process.exit(0);
+    // 网络抖动时 node-sdk 首次拿 token 可能失败(ECONNRESET) —— 不退出，
+    // 延时重试，等网络恢复后自愈。
+    let startAttempt = 0;
+    const MAX_START_ATTEMPTS = 5;
+    const tryStart = async (): Promise<void> => {
+      try {
+        const result = await start();
+        if (typeof result === "object" && result.status === "owned") {
+          console.error("[feishu] existing owner, exiting:", formatOwner(result.owner));
+          process.exit(0);
+        }
+      } catch (error) {
+        startAttempt += 1;
+        const msg = error instanceof Error ? error.message : String(error);
+        // 脱敏：不打印 node-sdk 的 axios 原始错误(含 app_secret)
+        const clean = msg.split(/\n/)[0].slice(0, 200);
+        if (startAttempt >= MAX_START_ATTEMPTS) {
+          updateStatus("disconnected");
+          console.error(`[feishu] 连飞书失败 ${startAttempt} 次，放弃：${clean}`);
+          console.error("[feishu] 检查网络(open.feishu.cn 可达?)后重启 ./agent --feishu");
+          return;
+        }
+        const wait = Math.min(30, 3 * startAttempt) * 1000;
+        console.error(`[feishu] 连飞书失败(${startAttempt}/${MAX_START_ATTEMPTS})：${clean}，${wait / 1000}s 后重试`);
+        updateStatus("connecting");
+        setTimeout(tryStart, wait);
       }
-    }).catch((error) => {
-      updateStatus(error instanceof BotUnavailableError ? "bot unavailable" : "disconnected");
-      console.error("[feishu] autoStart failed:", error instanceof Error ? error.message : error);
-      process.exit(1);
-    });
+    };
+    void tryStart();
   }
 
   pi.on("session_shutdown", async () => {

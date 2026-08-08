@@ -142,16 +142,23 @@ export class FeishuTransport {
 
   private async probeBotOpenId() {
     try {
-      const res = await this.sdkClient.request({
-        url: "/open-apis/bot/v3/info",
-        method: "GET",
-      });
+      // 网络抖动时重试（node-sdk 内部请求不走我们的 withRetry，这里包一层）
+      const res = (await withRetry(
+        () => this.sdkClient.request({
+          url: "/open-apis/bot/v3/info",
+          method: "GET",
+        }),
+        { maxRetries: 3, baseDelayMs: 1000, label: "feishu.probe_bot_openid" },
+      )) as any;
       this.botOpenId = res?.bot?.open_id || res?.data?.bot?.open_id || res?.data?.open_id;
       if (!this.botOpenId) {
         throw new Error(`bot/v3/info response missing open_id: ${JSON.stringify(res).slice(0, 200)}`);
       }
     } catch (error) {
-      throw new BotUnavailableError(error instanceof Error ? error.message : String(error));
+      // 脱敏：不把 node-sdk 原始错误（axios 带 config，含 app_secret）抛出去
+      const msg = error instanceof Error ? error.message : String(error);
+      const clean = msg.split(/\n/)[0].slice(0, 300);
+      throw new BotUnavailableError(clean);
     }
   }
 
