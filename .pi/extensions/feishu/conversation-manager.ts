@@ -449,7 +449,7 @@ export class ConversationManager {
     await next;
   }
 
-  /** /think：设置当前会话的推理级别（off/low/medium/high 等）。不重建会话。 */
+  /** /think：设置当前会话的推理级别。按当前模型支持的级别校验。 */
   async setThinkingLevel(key: string, level: string, onReply: (text: string) => Promise<void>) {
     const valid: string[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
     const normalized = level.toLowerCase();
@@ -459,6 +459,31 @@ export class ConversationManager {
     }
     const previous = this.previousTurn(key);
     const next = previous.then(async () => {
+      // 拿当前模型，看它支持哪些级别（thinkingLevelMap 非 null 的项）
+      const model = await this.getSelectedModel(key).catch(() => undefined);
+      const levelMap = (model as any)?.thinkingLevelMap as Record<string, unknown> | undefined;
+      let allowed: string[] = valid;
+      let modelLabel = "";
+      if (model && levelMap && typeof levelMap === "object") {
+        modelLabel = `${(model as any).provider}/${(model as any).id}`;
+        allowed = valid.filter((lv) => {
+          const mapped = (levelMap as Record<string, unknown>)[lv];
+          // null 表示该级别不支持；undefined 表示没声明（默认都支持）
+          return mapped !== null;
+        });
+        if (!allowed.length) allowed = valid;
+      }
+      if (!allowed.includes(normalized)) {
+        const highest = allowed.includes("xhigh") ? "xhigh"
+          : allowed.includes("high") ? "high"
+            : allowed.includes("medium") ? "medium"
+              : allowed[allowed.length - 1] || "medium";
+        await onReply(
+          `当前模型${modelLabel ? `（${modelLabel}）` : ""}不支持 **${normalized}**。\n` +
+          `可用级别：${allowed.join(" / ")}。建议用 ${highest}（当前最高）。`,
+        );
+        return;
+      }
       const cached = this.sessions.get(key);
       if (!cached) {
         await onReply("当前没有活动会话，无法设置。");
@@ -467,8 +492,8 @@ export class ConversationManager {
       try {
         const session = await cached;
         session.setThinkingLevel(normalized as any);
-        debugLog("feishu.think.level_set", { key, level: normalized });
-        await onReply(`✅ 推理级别已设为 **${normalized}**。\n\n` +
+        debugLog("feishu.think.level_set", { key, level: normalized, model: modelLabel || undefined });
+        await onReply(`✅ 推理级别已设为 **${normalized}**${modelLabel ? `（${modelLabel}）` : ""}。\n\n` +
           `· off/minimal — 快速问答，省 token\n` +
           `· medium — 默认均衡\n` +
           `· high/xhigh/max — 复杂推理，耗 token`);

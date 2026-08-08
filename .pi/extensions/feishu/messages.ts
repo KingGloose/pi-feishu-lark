@@ -125,6 +125,25 @@ export function parseMessageInput(
     collectAttachments(json, attachments);
     if (attachments.length) return { text: "", attachments, source: msg.msgType };
   } catch {}
+  // 位置消息：用户在飞书里分享的位置卡片
+  // content: {"name": "故宫", "longitude": "116.39", "latitude": "39.90"}
+  if (msg.msgType === "location") {
+    try {
+      const j = JSON.parse(msg.content || "{}");
+      const name = j.name || "";
+      const lng = j.longitude ?? j.long;
+      const lat = j.latitude ?? j.lat;
+      if (lng != null && lat != null) {
+        return {
+          text: `[用户分享了位置${name ? `：${name}` : ""}，经纬度 ${lng},${lat}（lng,lat）。`
+            + `这就是他的当前位置/要去的位置，需要地图能力时直接用这个坐标，不要再问他地址]`,
+          attachments,
+          source: "location",
+        };
+      }
+    } catch {}
+    return { text: "[用户分享了一个位置，但没解析到坐标]", attachments, source: "location" };
+  }
   // 未知类型：不要静默丢弃，至少给 agent 一个占位
   if (msg.msgType === "text") return { text: msg.content, attachments, source: "text-raw" };
   if (msg.msgType === "interactive") {
