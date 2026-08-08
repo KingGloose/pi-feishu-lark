@@ -171,25 +171,35 @@ export default function feishuExtension(pi: ExtensionAPI) {
       }
     });
     transport = new FeishuTransport(cfg, (msg) => messageHandler.handle(msg), async (action) => {
-      // 澄清卡回调：按钮 value 携带 clarify_id + choice
+      // 澄清卡回调：按钮 value 携带 clarify_id + choice；
+      // 输入框回调 action.input_value 携带用户输入 + value.free_input 标记
       const clarifyId = (action.value as any)?.clarify_id || (action.value as any)?.clarifyId;
       if (clarifyId) {
-        const choice = (action.value as any)?.choice
-          ?? (action as any).option
-          ?? (action as any).select
-          ?? "";
+        const isFreeInput = Boolean((action.value as any)?.free_input);
+        const inputValue = isFreeInput ? (action as any).input_value : undefined;
+        const choice = isFreeInput
+          ? ""
+          : (action.value as any)?.choice
+            ?? (action as any).option
+            ?? (action as any).select
+            ?? "";
         const handled = await clarify.handleAction({
           clarifyId: String(clarifyId),
           choice: String(choice),
+          inputValue: inputValue != null ? String(inputValue) : undefined,
           messageId: action.messageId,
         });
         if (handled) {
-          debugLog("feishu.clarify.card_handled", { clarifyId, choice });
+          debugLog("feishu.clarify.card_handled", {
+            clarifyId,
+            choice,
+            freeInput: isFreeInput ? String(inputValue).slice(0, 80) : undefined,
+          });
           return {
             schema: "2.0",
             body: {
               elements: [
-                { tag: "markdown", content: `✅ 已收到你的选择` },
+                { tag: "markdown", content: `✅ 已收到` },
               ],
             },
           };
@@ -837,19 +847,21 @@ function registerAskFeishuTool(
     name: "ask_feishu",
     label: "Ask Feishu User (interactive card)",
     description:
-      "向飞书用户发送一张交互选择卡（按钮），等待用户点选后返回其选择。\n" +
+      "向飞书用户发送一张交互选择卡（按钮 + 可选输入框），等待用户点选/输入后返回。\n" +
       "**当你需要用户做选择/确认时用它**——比如「要沉淀成知识页吗」「选 A 还是 B」\n" +
       "「好多了还是还那样」。不要自己构造卡片 JSON，用这个工具。\n" +
+      "想让他自由回答时传 allow_input=true（卡片底部会加一个输入框）。\n" +
       "仅当对话通过飞书远程进行时使用；本机 TUI 会话请改用 questionnaire。",
     promptSnippet:
-      "Need the Feishu user to pick/confirm → ask_feishu sends an interactive button card and waits for their tap.",
+      "Need the Feishu user to pick/confirm → ask_feishu sends an interactive button card (with optional free-text input) and waits.",
     parameters: Type.Object({
       question: Type.String({ description: "要澄清的问题" }),
       choices: Type.Array(Type.String({ description: "选项（纯文本，最多 6 个）" }), {
         description: "选项列表",
       }),
+      allow_input: Type.Optional(Type.Boolean({ description: "是否在卡片底部加自由输入框（默认 false）" })),
     }),
-    async execute(_toolCallId, params: { question: string; choices: string[] }) {
+    async execute(_toolCallId, params: { question: string; choices: string[]; allow_input?: boolean }) {
       if (clarify.hasPending) {
         return textToolResult("已有等待中的澄清请求，先处理完那个。");
       }
@@ -866,7 +878,7 @@ function registerAskFeishuTool(
         label: c,
       }));
       try {
-        const choice = await clarify.ask(chatId, params.question, options, 300_000);
+        const choice = await clarify.ask(chatId, params.question, options, 300_000, Boolean(params.allow_input));
         const label = options.find((o) => o.value === choice)?.label ?? choice;
         return textToolResult(`用户选择：${label}（${choice}）`);
       } catch (error) {
