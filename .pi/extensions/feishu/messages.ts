@@ -107,6 +107,17 @@ export function parseMessageInput(
       collectAttachments(json, attachments);
       return { text: "", attachments, source: "file" };
     }
+    // 语音消息：file_key 指向录音文件（m4a/ogg/amr）
+    if ((msg.msgType === "audio" || msg.msgType === "media") && typeof json.file_key === "string" && json.file_key) {
+      const fileName = typeof json.file_name === "string" && json.file_name
+        ? json.file_name
+        : msg.msgType === "audio"
+          ? `voice-${msg.messageId.slice(-6)}.m4a`
+          : `media-${msg.messageId.slice(-6)}.mp4`;
+      attachments.push({ kind: "file", fileKey: json.file_key, fileName });
+      collectAttachments(json, attachments);
+      return { text: "", attachments, source: msg.msgType };
+    }
     collectAttachments(json, attachments);
     if (attachments.length) return { text: "", attachments, source: msg.msgType };
   } catch {}

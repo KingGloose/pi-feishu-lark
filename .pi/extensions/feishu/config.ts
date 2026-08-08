@@ -188,6 +188,7 @@ export function loadBaseConfig(): FeishuConfig | undefined {
       streamFirstFlushMs: parsePositiveInt(process.env.FEISHU_STREAM_FIRST_FLUSH_MS, DEFAULT_CONFIG.streamFirstFlushMs!),
       streamMinChars: parsePositiveInt(process.env.FEISHU_STREAM_MIN_CHARS, DEFAULT_CONFIG.streamMinChars!),
       streamMaxBodyChars: parsePositiveInt(process.env.FEISHU_STREAM_MAX_BODY_CHARS, DEFAULT_CONFIG.streamMaxBodyChars!),
+      assetArchiveCmd: process.env.KG_ASSET_ARCHIVE?.trim() || undefined,
     });
   }
   if (!existsSync(CONFIG_PATH)) return undefined;

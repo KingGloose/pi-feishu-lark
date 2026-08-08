@@ -49,6 +49,13 @@ export type FeishuConfig = {
   streamPrintFrequencyMs?: number;
   /** CardKit 每次打印字符数（默认 1） */
   streamPrintStep?: number;
+  /**
+   * 素材归档命令：收到图片/文件/音频消息时，把下载好的素材交给
+   * 这个外部命令归档（spawn 不阻塞回复）。形如
+   * `python3 /path/to/archive_asset.py`，脚本接收 <in_path> <filename>。
+   * 未设置则跳过归档。
+   */
+  assetArchiveCmd?: string;
   /** 服务端推送 fullText 到 CardKit 的间隔 ms（默认 120） */
   streamPushIntervalMs?: number;
   /** @deprecated 兼容旧配置 */

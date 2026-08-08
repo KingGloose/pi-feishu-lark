@@ -1,3 +1,7 @@
+import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { spawn } from "node:child_process";
 import { detectCodeLanguage, decodeTextFile, detectImageMime, type FeishuImageInput, isSupportedImageMime, isSupportedTextFile } from "./attachments.js";
 import { buildModelCard, buildResumeCard } from "./cards.js";
 import type { ConversationManager } from "./conversation-manager.js";
@@ -20,7 +24,7 @@ const DAILY_TRIGGER_PROMPT = [
 import { ReplyCard } from "./reply-card.js";
 import type { FeishuBridgeStore } from "./bridge-store.js";
 import type { FeishuTransport } from "./transport.js";
-import type { FeishuMessage } from "./types.js";
+import type { FeishuAttachment, FeishuMessage } from "./types.js";
 
 const CONTENT_DEDUPE_TTL_MS = 5_000;
 
@@ -37,6 +41,40 @@ export class FeishuMessageHandler {
   reset() {
     this.seen.clear();
     this.recentContent.clear();
+  }
+
+  /**
+   * 素材归档（fire-and-forget）：把收到的图片/文件/音频原样下载，交给
+   * 外部归档命令（assetArchiveCmd）落盘到知识库 daily/<date>/assets/。
+   * 不 await —— 归档是后台活，不阻塞飞书回复。失败只记日志。
+   */
+  private archiveAttachments(msg: FeishuMessage, attachments: FeishuAttachment[], cmd: string) {
+    const transport = this.getTransport();
+    if (!transport) return;
+    for (const attachment of attachments) {
+      const fileName = attachment.fileName || (attachment.kind === "image" ? "image.png" : "unnamed");
+      const type = attachment.kind === "image" ? "image" : "file";
+      void (async () => {
+        try {
+          const resource = await transport.downloadMessageResource(msg.messageId, attachment.fileKey, type);
+          if (!resource?.bytes?.length) return;
+          const tmpDir = mkdtempSync(join(tmpdir(), "kg-archive-"));
+          const tmpFile = join(tmpDir, fileName);
+          writeFileSync(tmpFile, resource.bytes);
+          const child = spawn("bash", ["-lc", `${cmd} ${JSON.stringify(tmpFile)} ${JSON.stringify(fileName)} --source feishu:${msg.messageId}`], {
+            stdio: "ignore",
+          });
+          child.on("error", (err) => debugLog("feishu.archive.spawn_error", { error: err.message }));
+          child.on("exit", () => rmSync(tmpDir, { recursive: true, force: true }));
+        } catch (error) {
+          debugLog("feishu.archive.download_error", {
+            messageId: msg.messageId,
+            fileKey: attachment.fileKey,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      })();
+    }
   }
 
   async handle(msg: FeishuMessage) {
@@ -87,6 +125,11 @@ export class FeishuMessageHandler {
           fileName: item.fileName,
         })),
       });
+
+      // 素材归档：配置了 assetArchiveCmd 时,收到的图片/文件/音频原样归档（后台不阻塞）
+      if (cfg?.assetArchiveCmd && parsed.attachments.length) {
+        this.archiveAttachments(msg, parsed.attachments, cfg.assetArchiveCmd);
+      }
 
       if (!parsed.attachments.length) {
         if (!text && !quoted) {
