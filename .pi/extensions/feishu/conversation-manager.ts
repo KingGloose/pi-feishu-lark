@@ -10,25 +10,20 @@ import {
   SessionManager,
 } from "@earendil-works/pi-coding-agent";
 import type { FeishuBridgeRuntime } from "./bridge-runtime.js";
-import { CHILD_SESSION_ENV, ensureRoot, readJson, STATE_PATH, writeJson } from "./config.js";
+import { CHILD_SESSION_ENV, ensureRoot, loadConfig, readJson, STATE_PATH, writeJson } from "./config.js";
 import { debugLog } from "./debug.js";
 import { waitForPrompt } from "./prompt-timeout.js";
 import type { ResumeScope, ResumeSessionPage } from "./cards.js";
-import type { TaskStatusSink } from "./task-status-card.js";
+import type { ReplyCardSink } from "./reply-card.js";
 import type { FeishuState } from "./types.js";
 
 type ActiveRun = {
   session: AgentSession;
   runId?: string;
   stopped: boolean;
-  status?: TaskStatusSink;
-};
-
-export type ConversationTimeouts = {
-  /** Seconds before a long-running task sends a "still working" notice (0 disables). Default 180. */
-  promptNotifySec?: number;
-  /** Hard prompt timeout in seconds; the session is aborted on expiry (0 disables / wait indefinitely). Default 0. */
-  promptTimeoutSec?: number;
+  status?: ReplyCardSink;
+  /** 当前轮流式回调（由 promptWithImages 设置） */
+  onDelta?: (delta: string) => void;
 };
 
 export type StopConversationResult =
@@ -51,7 +46,6 @@ export class ConversationManager {
   constructor(
     private readonly cwd: string,
     private readonly bridge?: FeishuBridgeRuntime,
-    private readonly timeouts: ConversationTimeouts = {},
   ) {
     ensureRoot();
     this.state = readJson<FeishuState>(STATE_PATH, { sessions: {} });
@@ -74,8 +68,8 @@ export class ConversationManager {
     } catch {}
   }
 
-  async prompt(key: string, userText: string, onReply: (text: string) => Promise<void>) {
-    return this.promptWithImages(key, userText, [], onReply);
+  async prompt(key: string, userText: string, onReply: (text: string) => Promise<void>, onDelta?: (delta: string) => void) {
+    return this.promptWithImages(key, userText, [], onReply, undefined, onDelta);
   }
 
   async promptWithImages(
@@ -83,25 +77,59 @@ export class ConversationManager {
     userText: string,
     images: Array<{ type: "image"; data: string; mimeType: string }>,
     onReply: (text: string) => Promise<void>,
-    status?: TaskStatusSink,
+    status?: ReplyCardSink,
+    onDelta?: (delta: string) => void,
   ) {
     const previous = this.previousTurn(key);
     const next = previous.then(async () => {
       debugLog("feishu.prompt.start", { key, textLength: userText.length, imageCount: images.length });
       const session = await this.getSession(key);
-      const run: ActiveRun = { session, runId: status?.runId, stopped: false, status };
+      const run: ActiveRun = { session, runId: status?.runId, stopped: false, status, onDelta };
       this.activeRuns.set(key, run);
       this.bridge?.beginFeishuInput(session.sessionId);
+      // 流式走 session 级订阅（createSession 里）→ run.onDelta，避免漏事件
+      let unsub: (() => void) | undefined;
+      let deltaCount = 0;
+      let deltaChars = 0;
+      if (onDelta) {
+        const userOnDelta = onDelta;
+        run.onDelta = (delta: string) => {
+          deltaCount += 1;
+          deltaChars += delta.length;
+          userOnDelta(delta);
+        };
+      }
       try {
-        // If a previous turn is still streaming (e.g. the queue advanced while a
-        // long task was running), wait for it instead of erroring with
-        // "Agent is already processing".
-        if (session.isStreaming) {
-          debugLog("feishu.prompt.wait_for_idle", { key });
-          await session.waitForIdle();
-        }
         try {
-          await this.runPromptWithTimeouts(session, userText, images, key, onReply);
+          // 超时保护：notifyMs 后提示「仍在处理」（不误报失败），
+          // hardMs 后才真正中止（默认 0 = 永不硬超时）。
+          // 这是从上游 prompt-timeout.ts 保留的能力 —— @xjuai fork
+          // 用 withTimeout 替换后回归了 #12（长时间任务被误报失败）。
+          const notifyMs = loadConfig()?.promptNotifySec != null
+            ? loadConfig()!.promptNotifySec! * 1000
+            : 180_000;
+          const hardSec = loadConfig()?.promptTimeoutSec ?? 0;
+          await waitForPrompt(
+            session.prompt(userText, images.length ? { images } : undefined),
+            {
+              notifyMs,
+              hardMs: hardSec * 1000,
+              hardTimeoutMessage: `Pi 模型处理超时（超过 ${hardSec} 秒）仍未完成，已中止任务。可点击卡片「停止任务」或调大 config.json 中的 promptTimeoutSec。`,
+              onStillRunning: () => {
+                debugLog("feishu.prompt.notify_still_running", { key, elapsedMs: notifyMs });
+                // 任务没有失败 —— 只是还在跑。告诉用户而不是旧版那样误报失败。
+                void onReply("⏳ 任务仍在处理中，没有失败。请耐心等待，也可以点击任务卡片上的「停止任务」中止。")
+                  .catch(() => undefined);
+              },
+              onHardTimeout: async () => {
+                debugLog("feishu.prompt.hard_timeout", { key, elapsedMs: hardSec * 1000 });
+                // 先中止底层 run，避免 session 留在处理中。
+                try {
+                  await session.abort();
+                } catch {}
+              },
+            },
+          );
         } catch (error) {
           if (run.stopped) {
             debugLog("feishu.prompt.stopped", { key });
@@ -110,22 +138,66 @@ export class ConversationManager {
           throw error;
         }
       } finally {
+        try { unsub?.(); } catch {}
+        run.onDelta = undefined;
         if (this.activeRuns.get(key) === run) this.activeRuns.delete(key);
         this.bridge?.endFeishuInput(session.sessionId);
       }
       if (run.stopped) return;
       const answer = extractLastAssistantText(session);
-      debugLog("feishu.prompt.done", { key, answerLength: answer.length });
+      debugLog("feishu.prompt.done", {
+        key,
+        answerLength: answer.length,
+        deltaCount,
+        deltaChars,
+      });
       await onReply(answer || "No response.");
+      // onReply（ReplyCard.completeWithAnswer）已切到 done；此处仅兜底
       await status?.finish("done");
     }).catch(async (error) => {
       const message = error instanceof Error ? error.message : String(error);
       debugLog("feishu.prompt.error", { key, error: message });
-      await status?.finish("failed", message);
-      await onReply(`Pi error: ${message}`);
+      // 错误也写进同一张卡；onReply 若已是 completeWithAnswer 会 no-op（status 非 running）
+      if (status && "ensureFinal" in status && typeof (status as any).ensureFinal === "function") {
+        (status as any).ensureFinal(`出错了：${message}`);
+        await status.finish("failed", message);
+      } else {
+        await status?.finish("failed", message);
+        await onReply(`Pi error: ${message}`);
+      }
     });
     this.queues.set(key, next);
     await next;
+  }
+
+  /** 供 /status 使用 */
+  getStatus(key: string) {
+    const active = this.activeRuns.get(key);
+    return {
+      cwd: this.getWorkspace(key),
+      hasActiveRun: Boolean(active),
+      activeStopped: Boolean(active?.stopped),
+      sessionFile: this.state.sessions[key],
+    };
+  }
+
+  async getActualModel(key: string) {
+    const model = await this.getSelectedModel(key);
+    if (!model) return "默认模型";
+    return `${(model as any).provider}/${(model as any).id}`;
+  }
+
+  async getContextStatus(key: string) {
+    try {
+      const session = await this.getSession(key);
+      const anySession = session as any;
+      const tokens = anySession.contextTokens ?? anySession.tokenCount ?? null;
+      const contextWindow = anySession.contextWindow ?? anySession.model?.contextWindow ?? null;
+      const percent = tokens != null && contextWindow ? (Number(tokens) / Number(contextWindow)) * 100 : null;
+      return { tokens: tokens != null ? Number(tokens) : null, contextWindow: contextWindow != null ? Number(contextWindow) : null, percent };
+    } catch {
+      return null;
+    }
   }
 
   async stopConversation(key: string, onReply: (text: string) => Promise<void>, runId?: string): Promise<StopConversationResult> {
@@ -143,11 +215,11 @@ export class ConversationManager {
     }
 
     active.stopped = true;
-    await active.status?.stopImmediately("用户已停止任务");
+    await active.status?.stopImmediately("已停止");
     try {
       await active.session.abort();
       debugLog("feishu.prompt.abort", { key });
-      const message = "已停止当前处理。";
+      const message = "已停止";
       await onReply(message);
       return { status: "stopped", message };
     } catch (error) {
@@ -258,7 +330,7 @@ export class ConversationManager {
     const next = previous.then(async () => {
       const modelRuntime = await this.getModelRuntime();
       const model = modelRuntime.getModel(provider, modelId);
-      if (!model || !modelRuntime.hasConfiguredAuth(model.provider)) {
+      if (!model || !modelRuntime.hasConfiguredAuth(provider)) {
         await onReply(`这个模型当前不可用：${provider}/${modelId}。请发送 /model 重新选择。`);
         return;
       }
@@ -324,11 +396,11 @@ export class ConversationManager {
   }
 
   async getSelectedModel(key: string) {
-    const modelRuntime = await this.getModelRuntime();
     const selected = this.state.models?.[key];
     if (selected) {
+      const modelRuntime = await this.getModelRuntime();
       const model = modelRuntime.getModel(selected.provider, selected.id);
-      if (model && modelRuntime.hasConfiguredAuth(model.provider)) return model;
+      if (model && modelRuntime.hasConfiguredAuth(selected.provider)) return model;
     }
     const cached = this.sessions.get(key);
     if (cached) {
@@ -336,18 +408,14 @@ export class ConversationManager {
     }
     // Check settings default model before falling back to first available
     if (this.defaultProvider && this.defaultModelId) {
+      const modelRuntime = await this.getModelRuntime();
       const defaultModel = modelRuntime.getModel(this.defaultProvider, this.defaultModelId);
-      if (defaultModel && modelRuntime.hasConfiguredAuth(defaultModel.provider)) {
+      if (defaultModel && modelRuntime.hasConfiguredAuth(this.defaultProvider!)) {
         return defaultModel;
       }
     }
     const available = await this.getAvailableModels();
     return available[0];
-  }
-
-  private getModelRuntime() {
-    this.modelRuntimePromise ||= ModelRuntime.create();
-    return this.modelRuntimePromise;
   }
 
   resetMemory() {
@@ -368,59 +436,20 @@ export class ConversationManager {
   }
 
   private previousTurn(key: string) {
-    // Wait for the previous message to finish. Long tasks are allowed to run as
-    // long as they need; the task card stays "running" and /stop can abort at any
-    // time. An arbitrary cap here caused follow-up messages to hit
-    // "Agent is already processing" while the previous turn was still running.
-    return this.queues.get(key) || Promise.resolve();
+    const previous = this.queues.get(key) || Promise.resolve();
+    const queueWaitTimeoutMs = loadConfig()?.queueWaitTimeoutMs ?? 3_600_000;
+    return withTimeout(previous, queueWaitTimeoutMs, "上一条飞书消息处理超时，已跳过等待。")
+      .catch((error) => {
+        debugLog("feishu.queue.previous_timeout", {
+          key,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
   }
 
-  private notifyMs() {
-    const sec = this.timeouts?.promptNotifySec;
-    return typeof sec === "number" && Number.isFinite(sec) && sec > 0 ? sec * 1000 : 0;
-  }
-
-  private hardTimeoutMs() {
-    const sec = this.timeouts?.promptTimeoutSec;
-    return typeof sec === "number" && Number.isFinite(sec) && sec > 0 ? sec * 1000 : 0;
-  }
-
-  /**
-   * Run session.prompt with a non-fatal "still working" notice threshold and an
-   * opt-in hard timeout. Long-running tasks are never reported as failed just
-   * because they take longer than a fixed window; only the configured hard
-   * timeout (promptTimeoutSec > 0) fails, and it aborts the session first so the
-   * run is not left busy in the background.
-   */
-  private async runPromptWithTimeouts(
-    session: AgentSession,
-    userText: string,
-    images: Array<{ type: "image"; data: string; mimeType: string }>,
-    key: string,
-    onReply: (text: string) => Promise<void>,
-  ) {
-    const notifyMs = this.notifyMs();
-    const hardMs = this.hardTimeoutMs();
-    const hardSec = Math.round(hardMs / 1000);
-    await waitForPrompt(session.prompt(userText, images.length ? { images } : undefined), {
-      notifyMs,
-      hardMs,
-      hardTimeoutMessage: `Pi 模型处理超时（超过 ${hardSec} 秒）仍未完成，已中止任务。可点击卡片「停止任务」或调大 config.json 中的 promptTimeoutSec。`,
-      onStillRunning: () => {
-        debugLog("feishu.prompt.notify_still_running", { key, elapsedMs: notifyMs });
-        // The task is not failing — it is still running. Tell the user instead
-        // of the old behaviour which reported a false failure.
-        void onReply("⏳ 任务仍在处理中，没有失败。请耐心等待，也可以点击任务卡片上的「停止任务」中止。")
-          .catch(() => undefined);
-      },
-      onHardTimeout: async () => {
-        debugLog("feishu.prompt.hard_timeout", { key, elapsedMs: hardMs });
-        // Abort the underlying run so the session is not left processing.
-        try {
-          await session.abort();
-        } catch {}
-      },
-    });
+  private getModelRuntime() {
+    this.modelRuntimePromise ||= ModelRuntime.create();
+    return this.modelRuntimePromise;
   }
 
   private async createSession(key: string): Promise<AgentSession> {
@@ -455,7 +484,7 @@ export class ConversationManager {
     const { session } = await createAgentSession({
       cwd: workspaceCwd,
       agentDir: getAgentDir(),
-      modelRuntime,
+      modelRuntime: await this.getModelRuntime(),
       model,
       sessionManager,
       resourceLoader: loader,
@@ -463,8 +492,18 @@ export class ConversationManager {
 
     await session.bindExtensions({});
     this.bridge?.attachSession(key, session.sessionId);
-    session.subscribe((event) => {
-      this.activeRuns.get(key)?.status?.updateFromEvent(event);
+    // 会话级长期订阅：保证 text_delta 在 prompt 期间一定能收到
+    session.subscribe((event: any) => {
+      const run = this.activeRuns.get(key);
+      run?.status?.updateFromEvent(event);
+      const delta = extractAssistantTextDelta(event);
+      if (delta && run && !run.stopped) {
+        // 优先 onDelta（与 prompt 绑定）；否则直接 append 到 status 卡
+        if (run.onDelta) run.onDelta(delta);
+        else if (run.status && typeof (run.status as any).append === "function") {
+          (run.status as any).append(delta);
+        }
+      }
       if (event.type === "message_end") {
         this.bridge?.handleMessageEnd(session.sessionId, key, event.message);
       }
@@ -517,6 +556,40 @@ export class ConversationManager {
       return path;
     }
   }
+}
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, timeoutMessage: string): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(timeoutMessage)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+
+/** 从 Pi AgentSession 事件中提取 assistant 最终可见文本增量 */
+function extractAssistantTextDelta(event: any): string | undefined {
+  if (!event || typeof event !== "object") return undefined;
+  // 标准：message_update + assistantMessageEvent.text_delta
+  if (event.type === "message_update") {
+    const ame = event.assistantMessageEvent;
+    if (ame?.type === "text_delta" && typeof ame.delta === "string" && ame.delta) {
+      return ame.delta;
+    }
+    // 兼容：delta 挂在 event 上
+    if (typeof event.delta === "string" && event.delta) return event.delta;
+  }
+  // 兼容：顶层 text_delta
+  if (event.type === "text_delta" && typeof event.delta === "string" && event.delta) {
+    return event.delta;
+  }
+  return undefined;
 }
 
 function extractLastAssistantText(session: AgentSession): string {

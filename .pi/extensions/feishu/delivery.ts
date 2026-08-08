@@ -3,6 +3,7 @@ import { debugLog } from "./debug.js";
 import type { FeishuRoute } from "./types.js";
 import type { FeishuTransport } from "./transport.js";
 import { buildMarkdownCards, buildPostMessages, chooseMessageMode } from "./rich-text.js";
+import { withRetry } from "./retry.js";
 
 const TEXT_CHUNK_MAX_BYTES = 120 * 1024;
 
@@ -10,6 +11,10 @@ export class FeishuDelivery {
   private sdkClient: any;
 
   constructor(private readonly getTransport: () => FeishuTransport | undefined) {}
+
+  private async apiCall<T>(fn: () => Promise<T>): Promise<T> {
+    return withRetry(fn, { maxRetries: loadConfig()?.sendMaxRetries ?? 2, label: "feishu.delivery" });
+  }
 
   async send(route: FeishuRoute, text: string) {
     const transport = this.getTransport();
@@ -51,10 +56,10 @@ export class FeishuDelivery {
     }
     debugLog("feishu.bridge.reply", { messageId, length: text.length });
     for (const chunk of splitText(text, TEXT_CHUNK_MAX_BYTES)) {
-      await this.sdkClient.im.message.reply({
+      await this.apiCall(() => this.sdkClient.im.message.reply({
         path: { message_id: messageId },
         data: { msg_type: "text", content: JSON.stringify({ text: chunk }) },
-      });
+      }));
     }
   }
 
@@ -70,14 +75,14 @@ export class FeishuDelivery {
     }
     debugLog("feishu.bridge.send", { chatId, length: text.length });
     for (const chunk of splitText(text, TEXT_CHUNK_MAX_BYTES)) {
-      await this.sdkClient.im.message.create({
+      await this.apiCall(() => this.sdkClient.im.message.create({
         params: { receive_id_type: "chat_id" },
         data: {
           receive_id: chatId,
           msg_type: "text",
           content: JSON.stringify({ text: chunk }),
         },
-      });
+      }));
     }
   }
 
@@ -85,10 +90,10 @@ export class FeishuDelivery {
     const cfg = loadConfig();
     debugLog("feishu.bridge.reply_markdown_card", { messageId, length: text.length });
     for (const card of buildMarkdownCards(text, cfg?.language)) {
-      await this.sdkClient.im.message.reply({
+      await this.apiCall(() => this.sdkClient.im.message.reply({
         path: { message_id: messageId },
         data: { msg_type: "interactive", content: JSON.stringify(card) },
-      });
+      }));
     }
   }
 
@@ -96,14 +101,14 @@ export class FeishuDelivery {
     const cfg = loadConfig();
     debugLog("feishu.bridge.send_markdown_card", { chatId, length: text.length });
     for (const card of buildMarkdownCards(text, cfg?.language)) {
-      await this.sdkClient.im.message.create({
+      await this.apiCall(() => this.sdkClient.im.message.create({
         params: { receive_id_type: "chat_id" },
         data: {
           receive_id: chatId,
           msg_type: "interactive",
           content: JSON.stringify(card),
         },
-      });
+      }));
     }
   }
 
@@ -111,10 +116,10 @@ export class FeishuDelivery {
     const cfg = loadConfig();
     debugLog("feishu.bridge.reply_post", { messageId, length: text.length });
     for (const post of buildPostMessages(text, cfg?.language)) {
-      await this.sdkClient.im.message.reply({
+      await this.apiCall(() => this.sdkClient.im.message.reply({
         path: { message_id: messageId },
         data: { msg_type: "post", content: JSON.stringify(post) },
-      });
+      }));
     }
   }
 
@@ -122,14 +127,14 @@ export class FeishuDelivery {
     const cfg = loadConfig();
     debugLog("feishu.bridge.send_post", { chatId, length: text.length });
     for (const post of buildPostMessages(text, cfg?.language)) {
-      await this.sdkClient.im.message.create({
+      await this.apiCall(() => this.sdkClient.im.message.create({
         params: { receive_id_type: "chat_id" },
         data: {
           receive_id: chatId,
           msg_type: "post",
           content: JSON.stringify(post),
         },
-      });
+      }));
     }
   }
 }
