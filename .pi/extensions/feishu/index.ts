@@ -59,24 +59,6 @@ export default function feishuExtension(pi: ExtensionAPI) {
   });
   registerAskFeishuTool(pi, clarify, bridgeStore);
   registerSearchBilibiliTool(pi);
-  // 关键：注册的工具默认不 active，必须显式激活，否则 AI 的工具列表里看不到。
-  try {
-    const active = pi.getActiveTools();
-    pi.setActiveTools([
-      ...new Set([
-        ...active,
-        "ask_feishu",
-        "search_bilibili",
-        "feishu_config_get",
-        "feishu_config_set",
-        "feishu_config_clear",
-      ]),
-    ]);
-  } catch (error) {
-    debugLog("feishu.tools.activate_error", {
-      error: error instanceof Error ? error.message : String(error),
-    });
-  }
 
   const STATUS_KEY = "feishu-connection";
   const STATUS_REFRESH_MS = 2_000;
@@ -564,6 +546,26 @@ export default function feishuExtension(pi: ExtensionAPI) {
   pi.on("session_start", async (_event, ctx) => {
     uiRef = ctx.ui as any;
     startStatusRefresh();
+    // 关键：注册的工具默认不 active，必须显式激活，否则 AI 的工具列表里看不到。
+    // 必须在 session_start（runtime 初始化后）调用，extension 加载时调用会报错。
+    try {
+      const active = pi.getActiveTools();
+      pi.setActiveTools([
+        ...new Set([
+          ...active,
+          "ask_feishu",
+          "search_bilibili",
+          "feishu_config_get",
+          "feishu_config_set",
+          "feishu_config_clear",
+        ]),
+      ]);
+      debugLog("feishu.tools.activated", { count: pi.getActiveTools().length });
+    } catch (error) {
+      debugLog("feishu.tools.activate_error", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
     // 主进程自己连飞书 + 跑定时器(不再用 daemon 模式)。
     // 用户要求:终端关了全部停 —— 不残留后台进程。
     if (!scheduler) {

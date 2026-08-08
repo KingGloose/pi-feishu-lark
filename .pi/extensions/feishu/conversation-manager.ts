@@ -581,6 +581,16 @@ export class ConversationManager {
     });
 
     await session.bindExtensions({});
+    // 调试：确认子会话的工具列表（ask_feishu/search_bilibili 是否可见）
+    try {
+      const tools = (session as any).agent?.state?.tools;
+      if (Array.isArray(tools)) {
+        debugLog("feishu.session.tools", {
+          key,
+          names: tools.map((t: any) => t?.name).filter(Boolean).slice(0, 40),
+        });
+      }
+    } catch {}
     this.bridge?.attachSession(key, session.sessionId);
     // 会话级长期订阅：保证 text_delta 在 prompt 期间一定能收到
     session.subscribe((event: any) => {
