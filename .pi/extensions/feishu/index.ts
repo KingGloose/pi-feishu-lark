@@ -59,6 +59,24 @@ export default function feishuExtension(pi: ExtensionAPI) {
   });
   registerAskFeishuTool(pi, clarify, bridgeStore);
   registerSearchBilibiliTool(pi);
+  // 关键：注册的工具默认不 active，必须显式激活，否则 AI 的工具列表里看不到。
+  try {
+    const active = pi.getActiveTools();
+    pi.setActiveTools([
+      ...new Set([
+        ...active,
+        "ask_feishu",
+        "search_bilibili",
+        "feishu_config_get",
+        "feishu_config_set",
+        "feishu_config_clear",
+      ]),
+    ]);
+  } catch (error) {
+    debugLog("feishu.tools.activate_error", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
 
   const STATUS_KEY = "feishu-connection";
   const STATUS_REFRESH_MS = 2_000;
