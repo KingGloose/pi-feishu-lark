@@ -25,7 +25,7 @@ import {
   setRuntimeConfig,
 } from "./runtime-config.js";
 import { BotUnavailableError, FeishuTransport } from "./transport.js";
-import type { FeishuConfig, FeishuStatus } from "./types.js";
+import type { FeishuConfig, FeishuMessage, FeishuStatus } from "./types.js";
 
 export default function feishuExtension(pi: ExtensionAPI) {
   if (process.env[CHILD_SESSION_ENV] === "1") {
@@ -169,23 +169,25 @@ export default function feishuExtension(pi: ExtensionAPI) {
       }
     });
     transport = new FeishuTransport(cfg, (msg) => messageHandler.handle(msg), async (action) => {
-      // 澄清卡回调：value 携带 clarify_id + action.option 携带选择值
+      // 澄清卡回调：按钮 value 携带 clarify_id + choice
       const clarifyId = (action.value as any)?.clarify_id || (action.value as any)?.clarifyId;
       if (clarifyId) {
-        const choice = (action as any).option ?? (action as any).select ?? "";
+        const choice = (action.value as any)?.choice
+          ?? (action as any).option
+          ?? (action as any).select
+          ?? "";
         const handled = await clarify.handleAction({
           clarifyId: String(clarifyId),
           choice: String(choice),
           messageId: action.messageId,
         });
         if (handled) {
-          // 选完更新卡片：问题区改成「已选择」，去掉下拉框（用回调返回 2.0 卡）
           debugLog("feishu.clarify.card_handled", { clarifyId, choice });
           return {
             schema: "2.0",
             body: {
               elements: [
-                { tag: "markdown", content: `✅ 已收到你的选择：**${choice}**` },
+                { tag: "markdown", content: `✅ 已收到你的选择` },
               ],
             },
           };
@@ -241,7 +243,46 @@ export default function feishuExtension(pi: ExtensionAPI) {
         return buildResumeCard(page);
       }
       const selected = parseModelActionValue(action.value);
-      if (!selected) return;
+      if (!selected) {
+        // 兜底：无法识别的自定义 action（如 AI 构造的按钮卡）——
+        // 回一个 2.0 响应避免飞书「回调失败」，并把按钮点击作为
+        // 模拟消息喂回 AI 会话（让 AI 知道用户点了什么）。
+        const unknown = action.value as any;
+        debugLog("feishu.card.action_unhandled", {
+          messageId: action.messageId,
+          value: JSON.stringify(unknown).slice(0, 200),
+        });
+        const btnLabel = typeof unknown?.label === "string"
+          ? unknown.label
+          : typeof unknown?.action === "string"
+            ? String(unknown.action)
+            : "";
+        if (action.chatId && (unknown?.action || btnLabel)) {
+          const fake: FeishuMessage = {
+            messageId: `card-${action.messageId}`,
+            chatId: action.chatId,
+            chatType: "p2p",
+            senderOpenId: action.operatorOpenId || "ou_unknown",
+            msgType: "text",
+            content: JSON.stringify({
+              text: btnLabel ? `（你点了卡片按钮：${btnLabel}）` : `（你点了卡片按钮）`,
+            }),
+          };
+          void messageHandler.handle(fake).catch((err) => {
+            debugLog("feishu.card.feed_agent_error", {
+              error: err instanceof Error ? err.message : String(err),
+            });
+          });
+        }
+        return {
+          schema: "2.0",
+          body: {
+            elements: [
+              { tag: "markdown", content: "✅ 已收到" },
+            ],
+          },
+        };
+      }
       await conversations.selectModel(selected.key, selected.provider, selected.modelId, async (reply) => {
         await transport?.replyText(action.messageId, reply);
       });
@@ -754,10 +795,14 @@ function registerAskFeishuTool(
 ) {
   pi.registerTool({
     name: "ask_feishu",
-    label: "Ask Feishu User",
+    label: "Ask Feishu User (interactive card)",
     description:
-      "通过飞书选择卡向用户澄清问题并等待其点选（超时约 5 分钟）。仅当对话通过飞书远程进行时使用；本机 TUI 终端会话请改用 questionnaire。",
-    promptSnippet: "Need a decision/choice from the Feishu user; send an interactive select card and wait.",
+      "向飞书用户发送一张交互选择卡（按钮），等待用户点选后返回其选择。\n" +
+      "**当你需要用户做选择/确认时用它**——比如「要沉淀成知识页吗」「选 A 还是 B」\n" +
+      "「好多了还是还那样」。不要自己构造卡片 JSON，用这个工具。\n" +
+      "仅当对话通过飞书远程进行时使用；本机 TUI 会话请改用 questionnaire。",
+    promptSnippet:
+      "Need the Feishu user to pick/confirm → ask_feishu sends an interactive button card and waits for their tap.",
     parameters: Type.Object({
       question: Type.String({ description: "要澄清的问题" }),
       choices: Type.Array(Type.String({ description: "选项（纯文本，最多 6 个）" }), {

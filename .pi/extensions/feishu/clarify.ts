@@ -99,12 +99,18 @@ export class ClarifyManager {
     else pending.resolve(choice ?? "");
   }
 
-  /** schema 2.0 澄清卡：问题 + A/B/C 选项 + 下拉框 */
+  /** schema 2.0 澄清卡：问题 + 选项按钮（每个按钮一个 callback，value 携带 clarify_id + choice） */
   private buildCard(id: string, question: string, options: ClarifyOption[]): object {
     const letters = ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J"];
     return {
       schema: "2.0",
+      header: {
+        title: { tag: "plain_text", content: "需要你确认" },
+        template: "blue",
+      },
       body: {
+        direction: "vertical",
+        padding: "12px 12px 16px 12px",
         elements: [
           {
             tag: "markdown",
@@ -114,22 +120,21 @@ export class ClarifyManager {
           },
           { tag: "hr" },
           ...options.map((option, index) => ({
-            tag: "markdown",
-            content: option.description
-              ? `**${letters[index]}. ${option.label}** — ${option.description}`
-              : `**${letters[index]}. ${option.label}**`,
-            text_size: "notation",
+            tag: "button",
+            text: { tag: "plain_text", content: `${letters[index]}. ${option.label}` },
+            type: index === 0 ? "primary" : "default",
+            width: "fill",
+            margin: "8px 0 4px 0",
+            behaviors: [
+              {
+                type: "callback",
+                value: {
+                  clarify_id: id,
+                  choice: option.value,
+                },
+              },
+            ],
           })),
-          {
-            tag: "select_static",
-            element_id: SELECT_ELEMENT_ID,
-            options: options.map((option, index) => ({
-              value: option.value,
-              text: { tag: "plain_text", content: `${letters[index]}. ${option.label}` },
-            })),
-            placeholder: { tag: "plain_text", content: "请选择…" },
-            value: { clarify_id: id },
-          },
         ],
       },
     };
