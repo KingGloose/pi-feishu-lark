@@ -159,8 +159,18 @@ export class FeishuMessageHandler {
         modelSupportsImage,
       });
 
-      const processed = await this.processAttachments(msg, parsed.attachments, modelSupportsImage);
-      const { imageInputs, fileSections, downloadErrors, skippedImageCount } = processed;
+      const processed = await this.processAttachments(msg, parsed.attachments, modelSupportsImage, Boolean(cfg?.assetArchiveCmd));
+      const { imageInputs, fileSections, downloadErrors, skippedImageCount, archivedAssets } = processed;
+
+      // 只有无法喂给 LLM 但已归档的素材（如 mp3）：不报错，友好告知归档中。
+      if (archivedAssets.length && !imageInputs.length && !fileSections.length && !text.trim()) {
+        await transport.replyText(
+          msg.messageId,
+          `收到${archivedAssets.length} 份素材（${archivedAssets.join("、")}），已归档，正在处理（录音转文字/文档转 md）。`,  
+        );
+        await markFeishuMessage(msg.messageId, "replied");
+        return;
+      }
 
       if (skippedImageCount > 0 && imageInputs.length === 0 && !fileSections.length && !text.trim()) {
         await transport.replyText(
@@ -380,11 +390,13 @@ export class FeishuMessageHandler {
     msg: FeishuMessage,
     attachments: Array<{ kind: "image" | "file"; fileKey: string; fileName?: string }>,
     modelSupportsImage: boolean,
+    hasArchiver = false,
   ) {
     const transport = this.getTransport();
     const imageInputs: FeishuImageInput[] = [];
     const fileSections: string[] = [];
     const downloadErrors: string[] = [];
+    const archivedAssets: string[] = [];
     let skippedImageCount = 0;
 
     for (const attachment of attachments) {
@@ -426,7 +438,13 @@ export class FeishuMessageHandler {
 
       const fileName = attachment.fileName || "unnamed";
       if (!isSupportedTextFile(fileName)) {
-        downloadErrors.push(`文件类型不支持：${fileName}`);
+        if (hasArchiver) {
+          // 归档器已拿到附件（archiveAttachments 在 parsed 后 fire-and-forget），
+          // 这里是“不能喂给 LLM 但能归档”的二进制素材（音频/视频/压缩包等）。
+          archivedAssets.push(fileName);
+        } else {
+          downloadErrors.push(`文件类型不支持：${fileName}`);
+        }
         continue;
       }
       if (!transport) {
@@ -452,7 +470,7 @@ export class FeishuMessageHandler {
       }
     }
 
-    return { imageInputs, fileSections, downloadErrors, skippedImageCount };
+    return { imageInputs, fileSections, downloadErrors, skippedImageCount, archivedAssets };
   }
 }
 
