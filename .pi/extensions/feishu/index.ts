@@ -142,6 +142,7 @@ export default function feishuExtension(pi: ExtensionAPI) {
     }
     gatewayLock = lockResult.handle;
     gatewayLock.setOnLost(async () => {
+      debugLog("feishu.gateway.lock_lost_fired", { pid: gatewayLock?.owner.pid });
       await transport?.stop();
       transport = undefined;
       gatewayLock = undefined;
@@ -210,15 +211,20 @@ export default function feishuExtension(pi: ExtensionAPI) {
       const currentModel = await conversations.getSelectedModel(selected.key);
       return buildModelCard(selected.key, models, currentModel);
     });
+    // 用局部变量持有 lock handle —— 全局 gatewayLock 可能被 onLost 清空，
+    // 但 start() 流程中需要保证 handle 稳定。onLost 只做状态更新，
+    // 不在这里清空全局(避免 start 中途 gatewayLock 变 undefined 崩溃)。
+    const lockHandle = gatewayLock;
     try {
       await transport.start();
-      gatewayLock.startHeartbeat();
-      await gatewayLock.update("connected");
+      debugLog("feishu.gateway.pre_heartbeat", { hasLockHandle: Boolean(lockHandle) });
+      lockHandle.startHeartbeat();
+      await lockHandle.update("connected");
       updateStatus("connected");
       return "started";
     } catch (error) {
       updateStatus(error instanceof BotUnavailableError ? "bot unavailable" : "disconnected");
-      await gatewayLock.release();
+      await lockHandle?.release();
       gatewayLock = undefined;
       transport = undefined;
       throw error;
