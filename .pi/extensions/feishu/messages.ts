@@ -110,6 +110,7 @@ export function parseBotCommand(text: string): BotCommand | undefined {
   if (normalized === "/stop") return { name: "stop" };
   if (normalized === "/status") return { name: "status" };
   if (normalized === "/commands") return { name: "commands" };
+  if (normalized === "/help") return { name: "commands" };
   const workspaceMatch = trimmed.match(/^\/workspace(?:\s+(.+))?$/s);
   if (workspaceMatch) {
     return { name: "workspace", path: workspaceMatch[1]?.trim() };
@@ -141,6 +142,7 @@ export function getCommandList(): string {
     "/config <key> <value> — 设置白名单配置并立即生效",
     "/config clear [key|all] — 清除 runtime overrides",
     "/commands — 显示命令列表",
+    "/help — 显示命令列表（同 /commands）",
   ].join("\n");
 }
 

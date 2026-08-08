@@ -28,6 +28,8 @@ export type ReplyCardSink = {
   finish(status: Exclude<ReplyCardStatus, "running" | "inactive">, note?: string): Promise<void>;
   append(delta: string): void;
   ensureFinal(text: string): void;
+  /** 记录本次调用的 token 用量（可选，用于卡片底部注记） */
+  setUsage?(usage: { input?: number; output?: number; cacheRead?: number; reasoning?: number } | null): void;
 };
 
 export type ReplyCardStreamOptions = {
@@ -89,6 +91,8 @@ export class ReplyCard implements ReplyCardSink {
   private status: ReplyCardStatus = "running";
   private body = "";
   private note: string | undefined;
+  private readonly startedAt = Date.now();
+  private usage: { input?: number; output?: number; cacheRead?: number; reasoning?: number } | null = null;
   private cardkit: CardKitStream | undefined;
   private fallbackCardId: string | undefined;
   private readonly streamOpts: ReturnType<typeof resolveStreamOptions>;
@@ -110,6 +114,23 @@ export class ReplyCard implements ReplyCardSink {
 
   get messageId() {
     return this.fallbackCardId;
+  }
+
+  /** 记录本次调用的 token 用量（由 conversation-manager 在完成时传入）。 */
+  setUsage(usage: { input?: number; output?: number; cacheRead?: number; reasoning?: number } | null) {
+    this.usage = usage;
+  }
+
+  /** 生成卡片底部注记：耗时 + token。 */
+  private buildFinalNote(): string | undefined {
+    const sec = Math.max(1, Math.round((Date.now() - this.startedAt) / 1000));
+    const fmt = (n?: number) => (n ? `${(n / 1000).toFixed(1)}k` : "-");
+    let s = `⏱ ${sec} 秒`;
+    if (this.usage && (this.usage.input != null || this.usage.output != null)) {
+      s += ` · ↑${fmt(this.usage.input)} ↓${fmt(this.usage.output)}`;
+      if (this.usage.cacheRead) s += ` · 缓存读 ${fmt(this.usage.cacheRead)}`;
+    }
+    return s;
   }
 
   async start() {
@@ -193,7 +214,7 @@ export class ReplyCard implements ReplyCardSink {
 
   async completeWithAnswer(answer: string) {
     this.ensureFinal(answer || "（无内容）");
-    await this.finishFinal("done", undefined);
+    await this.finishFinal("done", this.buildFinalNote());
   }
 
   private async finishFinal(

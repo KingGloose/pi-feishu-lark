@@ -81,6 +81,7 @@ export class ConversationManager {
     onDelta?: (delta: string) => void,
   ) {
     const previous = this.previousTurn(key);
+    const startedAt = Date.now();
     const next = previous.then(async () => {
       debugLog("feishu.prompt.start", { key, textLength: userText.length, imageCount: images.length });
       const session = await this.getSession(key);
@@ -145,11 +146,17 @@ export class ConversationManager {
       }
       if (run.stopped) return;
       const answer = extractLastAssistantText(session);
+      const usage = extractLastUsage(session);
+      // 把 token 用量交给卡片，卡片完成时在底部显示「⏱ 秒 · ↑/↓ token」
+      status?.setUsage?.(usage);
+      const elapsedSec = Math.round((Date.now() - startedAt) / 1000);
       debugLog("feishu.prompt.done", {
         key,
         answerLength: answer.length,
         deltaCount,
         deltaChars,
+        elapsedSec,
+        usage: usage ? { input: usage.input, output: usage.output } : null,
       });
       await onReply(answer || "No response.");
       // onReply（ReplyCard.completeWithAnswer）已切到 done；此处仅兜底
@@ -607,6 +614,31 @@ function extractLastAssistantText(session: AgentSession): string {
   }
   return "";
 }
+
+/** 从最后一条 assistant 消息里取 usage（token 统计），没有就返回 null。 */
+function extractLastUsage(session: AgentSession): UsageLike | null {
+  const messages = [...(session.messages || [])].reverse();
+  for (const msg of messages as any[]) {
+    if (msg.role !== "assistant") continue;
+    if (msg.usage && typeof msg.usage === "object") return msg.usage as UsageLike;
+    // 有的 provider 把 usage 放 content 块里
+    const content = msg.content;
+    if (Array.isArray(content)) {
+      for (const part of content) {
+        if (part?.type === "usage" && part.usage) return part.usage as UsageLike;
+      }
+    }
+  }
+  return null;
+}
+
+type UsageLike = {
+  input?: number;
+  output?: number;
+  cacheRead?: number;
+  cacheWrite?: number;
+  reasoning?: number;
+};
 
 function resolveWorkspacePath(input: string) {
   const trimmed = input.trim();

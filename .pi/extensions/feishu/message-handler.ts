@@ -128,6 +128,16 @@ export class FeishuMessageHandler {
 
       const basePrompt = buildPrompt(msg, text, fileSections, imageInputs, skippedImageCount, modelSupportsImage, downloadErrors);
       const prompt = buildPromptWithQuote(basePrompt, quoted);
+
+      // 排队提示：上一条还在处理时，先回一条普通消息告诉用户在排队，
+      // 不然静默入队容易让人以为消息丢了。
+      if (this.conversations.getStatus(key).hasActiveRun) {
+        await this.getTransport()?.replyText(
+          msg.messageId,
+          "⏳ 上一条还在处理，这条排队中（完成后自动开始）。",
+        );
+      }
+
       // 单卡：全程 header；流式参数来自 config/env
       const useStreaming = cfg?.streamingReply !== false;
       const card = new ReplyCard(key, msg.messageId, transport, {
