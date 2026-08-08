@@ -13,12 +13,16 @@ import { FeishuCardActionWebhook } from "./card-action-webhook.js";
 const TEXT_CHUNK_MAX_BYTES = 120 * 1024;
 
 // 「正在操作」表情池：收到消息时随机挑一个，完成后撤销。
-// 都是飞书支持的标准 emoji 类型。
+// ⚠️ 全部为实测合法的 emoji_type(飞书对大小写敏感,混用 PascalCase)。
+// 之前池里一半非法(TOUCH/UNDERSTAND/GREAT/YES/NO/HUAHUO/BANANA/TADA)导致
+// 随机抽到就报 231001 reaction type is invalid。已逐个实测替换。
+// 实测验证过的合法值(2026-08-08):Get OK THUMBSUP SPEECHLESS SMART LAUGH
+// CRAZY LOVE LOL SHOCKED THANKS FISTBUMP GLANCE HUG SALUTE SMILE
 const REACTION_POOL = [
-  "Get", "OK", "TOUCH", "THUMBSUP",
-  "UNDERSTAND", "SPEECHLESS", "SMART", "GREAT",
-  "YES", "NO", "LAUGH", "HUAHUO",
-  "CRAZY", "BANANA", "TADA", "LOVE",
+  "Get", "OK", "THUMBSUP", "SPEECHLESS",
+  "SMART", "LAUGH", "CRAZY", "LOVE",
+  "LOL", "SHOCKED", "THANKS", "FISTBUMP",
+  "GLANCE", "HUG", "SALUTE", "SMILE",
 ];
 
 export class BotUnavailableError extends Error {
