@@ -227,7 +227,8 @@ export class ReplyCard implements ReplyCardSink {
 
     if (this.cardkit) {
       // 同一张 CardKit 卡上关闭流式并更新 header（回复/已停止/出错了）
-      await this.cardkit.close(this.body, status === "failed" ? "failed" : status === "stopped" ? "stopped" : "done");
+      // 传 note（耗时/token）让 done 分支显示在正文下方
+      await this.cardkit.close(this.body, status === "failed" ? "failed" : status === "stopped" ? "stopped" : "done", this.note);
       return;
     }
 
@@ -240,7 +241,8 @@ export class ReplyCard implements ReplyCardSink {
             key: this.key,
             runId: this.runId,
             status,
-            note: status === "done" ? undefined : this.note,
+            // done 也显示 note（耗时/token）—— 之前强制 undefined 丢掉了注记
+            note: this.note,
             body: this.body,
           }),
         );

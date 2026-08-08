@@ -50,9 +50,12 @@ export function buildCardKitCardJson(input: {
       elements.push(buildStopButton(input.key, input.runId));
     }
   } else if (input.status === "done") {
+    // 正文 + 底部注记（耗时/token）。note 是 buildFinalNote 生成的。
+    const parts: string[] = [body || " "];
+    if (note) parts.push(note);
     elements.push({
       tag: "markdown",
-      content: body || " ",
+      content: parts.join("\n\n"),
       element_id: "content",
     });
   } else {

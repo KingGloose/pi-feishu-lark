@@ -199,7 +199,7 @@ export class CardKitStream {
    * 2) 关闭 streaming_mode
    * 3) 全量更新卡片（header 改为「回复」/绿，避免一直停在「回复中」）
    */
-  async close(finalText?: string, finalStatus: "done" | "stopped" | "failed" = "done"): Promise<void> {
+  async close(finalText?: string, finalStatus: "done" | "stopped" | "failed" = "done", note?: string): Promise<void> {
     if (this.closed) return;
     this.closed = true;
     if (finalText) this.ensureFinal(finalText);
@@ -251,6 +251,7 @@ export class CardKitStream {
         body: this.fullText,
         key: this.conversationKey,
         runId: this.runId,
+        note,
         streaming: false,
       });
       const updateRes = await fetch(`${this.baseUrl()}/open-apis/cardkit/v1/cards/${this.cardId}`, {
