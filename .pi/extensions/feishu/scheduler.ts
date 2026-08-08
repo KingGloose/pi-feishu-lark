@@ -40,6 +40,12 @@ const DAILY_DEADLINE_HOUR = 11;        // 过了 11 点当天不再补发
 const COMPANION_MIN_MS = 30 * 60_000;  // 伙伴最小间隔 30 分钟
 const COMPANION_MAX_MS = 120 * 60_000; // 伙伴最大间隔 120 分钟
 
+// 测试模式：环境变量覆盖触发时间，测完去掉即可恢复正式节奏。
+//   KG_SCHED_DAILY_SECS=<秒>    启动后 N 秒触发一次日报
+//   KG_SCHED_COMPANION_SECS=<秒> 启动后 N 秒触发一次伙伴
+const TEST_DAILY_SECS = Number(process.env.KG_SCHED_DAILY_SECS || 0);
+const TEST_COMPANION_SECS = Number(process.env.KG_SCHED_COMPANION_SECS || 0);
+
 const DAILY_PROMPT = [
   "日报时间。读 skills/kg-daily-report/SKILL.md 并完整按它执行。",
   "第一步先跑 should_send.py：退出码 1 就**安静结束**，",
@@ -60,6 +66,8 @@ export class Scheduler {
   private lastCompanionAt = 0;
   private nextCompanionGapMs = 0;
   private running = false;
+  private readonly startedAt = Date.now();
+  private companionTestFired = false;
 
   constructor(private readonly conversations: ConversationManager) {}
 
@@ -100,6 +108,19 @@ export class Scheduler {
       const now = new Date();
       // 本地日期(北京时间,进程时区)
       const localDay = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+
+      // ── 测试模式：环境变量指定的秒数后触发（KG_SCHED_*_SECS）──
+      const sinceStart = Date.now() - this.startedAt;
+      if (TEST_DAILY_SECS > 0 && sinceStart >= TEST_DAILY_SECS * 1000 && this.lastDailyDay !== localDay) {
+        this.lastDailyDay = localDay;
+        await this.fireDaily();
+        return;
+      }
+      if (TEST_COMPANION_SECS > 0 && sinceStart >= TEST_COMPANION_SECS * 1000 && !this.companionTestFired) {
+        this.companionTestFired = true;
+        await this.fireCompanion();
+        return;
+      }
 
       // ── 日报: 9:30 到 11:00 之间,每天一次 ──
       if (this.lastDailyDay !== localDay) {
