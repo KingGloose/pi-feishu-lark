@@ -84,8 +84,10 @@ export class FeishuMessageHandler {
 
     let handledMsg = false;
     try {
+      debugLog("feishu.handler.enter", { messageId: msg.messageId, seen: this.seen.has(msg.messageId) });
       if (this.seen.has(msg.messageId)) return;
       if (!(await claimFeishuMessage(msg.messageId))) return;
+      debugLog("feishu.handler.claimed_ok", { messageId: msg.messageId });
       this.seen.add(msg.messageId);
       if (this.seen.size > 2000) this.seen.clear();
       handledMsg = true;

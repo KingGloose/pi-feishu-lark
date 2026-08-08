@@ -241,6 +241,7 @@ export class FeishuTransport {
       });
     }
     debugLog("feishu.message.dispatch", { messageId: msg.messageId });
+    debugLog("feishu.message.dispatch_call", { messageId: msg.messageId, hasOnMessage: Boolean(this.onMessage) });
     void this.onMessage(msg).catch((error) => {
       debugLog("feishu.message.dispatch_error", {
         messageId: msg.messageId,
