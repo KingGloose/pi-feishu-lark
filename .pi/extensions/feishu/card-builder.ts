@@ -1,4 +1,6 @@
 /** 单卡 UI 纯函数：构建飞书 interactive / CardKit 卡片 JSON（无 IO） */
+import { conversationSummary } from "./messages.js";
+
 export type ReplyCardStatus = "running" | "done" | "failed" | "stopped" | "inactive";
 
 export const STOP_ACTION = "pi_feishu_stop_task";
@@ -86,7 +88,7 @@ export function buildCardKitCardJson(input: {
     config,
     header: {
       template: headerTemplate(input.status),
-      title: { tag: "plain_text", content: titleForStatus(input.status) },
+      title: { tag: "plain_text", content: titleForStatus(input.status, input.key) },
     },
     body: { elements },
   };
@@ -161,7 +163,7 @@ export function buildReplyCard(input: {
     },
     header: {
       template: headerTemplate(input.status),
-      title: { tag: "plain_text", content: titleForStatus(input.status) },
+      title: { tag: "plain_text", content: titleForStatus(input.status, input.key) },
     },
     elements,
   };
@@ -183,12 +185,17 @@ function normalizeNote(text: string) {
   return `${compact.slice(0, MAX_NOTE_CHARS - 1)}…`;
 }
 
-function titleForStatus(status: ReplyCardStatus) {
-  if (status === "done") return "回复";
-  if (status === "failed") return "出错了";
-  if (status === "stopped") return "已停止";
-  if (status === "inactive") return "已结束";
-  return "回复中";
+function titleForStatus(status: ReplyCardStatus, key?: string) {
+  // 会话摘要前缀：让用户知道这条消息在哪个会话（多会话场景必需）
+  let base = "回复";
+  if (status === "failed") base = "出错了";
+  else if (status === "stopped") base = "已停止";
+  else if (status === "inactive") base = "已结束";
+  else if (status === "running") base = "回复中";
+  if (key) {
+    return `${conversationSummary(key)} · ${base}`;
+  }
+  return base;
 }
 
 function headerTemplate(status: ReplyCardStatus) {

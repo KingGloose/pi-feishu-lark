@@ -88,6 +88,8 @@ export class ConversationManager {
       const run: ActiveRun = { session, runId: status?.runId, stopped: false, status, onDelta };
       this.activeRuns.set(key, run);
       this.bridge?.beginFeishuInput(session.sessionId);
+      // 把 pi 会话 id 告诉卡片（显示在底部注记里，方便 /resume 定位）
+      status?.setSessionId?.(session.sessionId);
       // 流式走 session 级订阅（createSession 里）→ run.onDelta，避免漏事件
       let unsub: (() => void) | undefined;
       let deltaCount = 0;

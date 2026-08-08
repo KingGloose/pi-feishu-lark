@@ -35,6 +35,26 @@ export function conversationKey(msg: FeishuMessage) {
   return `group:${msg.chatId}`;
 }
 
+/**
+ * 会话摘要：把会话 key 转成可读标签，显示在卡片上。
+ *
+ * 多会话场景下用户需要知道「这条消息在哪个会话」：
+ *   p2p:ou_xxx        → 「超级agent」
+ *   group:oc_xxx      → 「群(oc_xxx前8位)」
+ *   group:oc_xxx:thread:t → 「群(oc_xxx前8位)·话题」
+ *
+ * 只取 chat_id / open_id 的后缀做短标识，不展示完整 id。
+ */
+export function conversationSummary(key: string): string {
+  if (key.startsWith("p2p:")) return "超级agent";
+  const m = key.match(/^group:([^:]+)(?::thread:(.+))?$/);
+  if (m) {
+    const chatShort = m[1].slice(-8);
+    return m[2] ? `群(${chatShort})·话题` : `群(${chatShort})`;
+  }
+  return key.slice(0, 16);
+}
+
 export function conversationLabel(msg: FeishuMessage) {
   if (msg.chatType === "p2p") return "[飞书私聊]";
   if (msg.rootId || msg.parentId || msg.threadId || msg.chatMode === "topic") return "[飞书话题]";

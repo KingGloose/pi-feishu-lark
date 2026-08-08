@@ -30,6 +30,8 @@ export type ReplyCardSink = {
   ensureFinal(text: string): void;
   /** 记录本次调用的 token 用量（可选，用于卡片底部注记） */
   setUsage?(usage: { input?: number; output?: number; cacheRead?: number; reasoning?: number } | null): void;
+  /** 记录本次调用的 pi 会话 id（可选，用于卡片标注是哪个会话） */
+  setSessionId?(sessionId: string): void;
 };
 
 export type ReplyCardStreamOptions = {
@@ -93,6 +95,7 @@ export class ReplyCard implements ReplyCardSink {
   private note: string | undefined;
   private readonly startedAt = Date.now();
   private usage: { input?: number; output?: number; cacheRead?: number; reasoning?: number } | null = null;
+  private sessionId: string | undefined;
   private cardkit: CardKitStream | undefined;
   private fallbackCardId: string | undefined;
   private readonly streamOpts: ReturnType<typeof resolveStreamOptions>;
@@ -121,16 +124,23 @@ export class ReplyCard implements ReplyCardSink {
     this.usage = usage;
   }
 
-  /** 生成卡片底部注记：耗时 + token。 */
+  /** 记录本次调用的 pi 会话 id（由 conversation-manager 在拿到 session 后传入）。 */
+  setSessionId(sessionId: string) {
+    this.sessionId = sessionId;
+  }
+
+  /** 生成卡片底部注记：耗时 + token + 会话id。 */
   private buildFinalNote(): string | undefined {
     const sec = Math.max(1, Math.round((Date.now() - this.startedAt) / 1000));
     const fmt = (n?: number) => (n ? `${(n / 1000).toFixed(1)}k` : "-");
-    let s = `⏱ ${sec} 秒`;
+    const parts: string[] = [`⏱ ${sec} 秒`];
     if (this.usage && (this.usage.input != null || this.usage.output != null)) {
-      s += ` · ↑${fmt(this.usage.input)} ↓${fmt(this.usage.output)}`;
-      if (this.usage.cacheRead) s += ` · 缓存读 ${fmt(this.usage.cacheRead)}`;
+      parts.push(`↑${fmt(this.usage.input)} ↓${fmt(this.usage.output)}`);
+      if (this.usage.cacheRead) parts.push(`缓存读 ${fmt(this.usage.cacheRead)}`);
     }
-    return s;
+    // 会话id：短格式，方便在 TUI /resume 里定位。完整 id 在注记里太长。
+    if (this.sessionId) parts.push(`会话 ${this.sessionId.slice(0, 8)}`);
+    return parts.join(" · ");
   }
 
   async start() {
