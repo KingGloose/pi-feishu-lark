@@ -449,6 +449,39 @@ export class ConversationManager {
     await next;
   }
 
+  /** /think：设置当前会话的推理级别（off/low/medium/high 等）。不重建会话。 */
+  async setThinkingLevel(key: string, level: string, onReply: (text: string) => Promise<void>) {
+    const valid: string[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+    const normalized = level.toLowerCase();
+    if (!valid.includes(normalized)) {
+      await onReply(`无效的推理级别：${level}。可选：${valid.join(" / ")}`);
+      return;
+    }
+    const previous = this.previousTurn(key);
+    const next = previous.then(async () => {
+      const cached = this.sessions.get(key);
+      if (!cached) {
+        await onReply("当前没有活动会话，无法设置。");
+        return;
+      }
+      try {
+        const session = await cached;
+        session.setThinkingLevel(normalized as any);
+        debugLog("feishu.think.level_set", { key, level: normalized });
+        await onReply(`✅ 推理级别已设为 **${normalized}**。\n\n` +
+          `· off/minimal — 快速问答，省 token\n` +
+          `· medium — 默认均衡\n` +
+          `· high/xhigh/max — 复杂推理，耗 token`);
+      } catch (error) {
+        await onReply(`设置失败：${error instanceof Error ? error.message : String(error)}`);
+      }
+    }).catch(async (error) => {
+      await onReply(`Pi error: ${error instanceof Error ? error.message : String(error)}`);
+    });
+    this.queues.set(key, next);
+    await next;
+  }
+
   getWorkspace(key: string) {
     return this.state.workspaces?.[key] || this.cwd;
   }

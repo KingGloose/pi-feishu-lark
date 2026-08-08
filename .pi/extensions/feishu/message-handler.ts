@@ -328,6 +328,13 @@ export class FeishuMessageHandler {
       return true;
     }
 
+    if (command.name === "think") {
+      await this.conversations.setThinkingLevel(key, command.level || "", async (reply) => {
+        await transport.replyText(msg.messageId, reply);
+      });
+      return true;
+    }
+
     if (command.name === "status") {
       const st = this.conversations.getStatus(key);
       const ctx = await this.conversations.getContextStatus(key);

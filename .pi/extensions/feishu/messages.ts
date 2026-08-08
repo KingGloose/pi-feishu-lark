@@ -7,6 +7,7 @@ export type BotCommand =
   | { name: "model" }
   | { name: "stop" }
   | { name: "workspace"; path?: string }
+  | { name: "think"; level?: string }
   | { name: "status" }
   | { name: "commands" }
   | { name: "daily" }
@@ -141,6 +142,8 @@ export function parseBotCommand(text: string): BotCommand | undefined {
   const normalized = trimmed.replace(/\s+/g, " ");
   if (normalized === "/new") return { name: "new" };
   if (normalized === "/resume") return { name: "resume" };
+  // /sessions 是 /resume 的别名：会话列表 + 一键切换按钮
+  if (normalized === "/sessions") return { name: "resume" };
   if (normalized === "/model") return { name: "model" };
   if (normalized === "/stop") return { name: "stop" };
   if (normalized === "/status") return { name: "status" };
@@ -153,6 +156,10 @@ export function parseBotCommand(text: string): BotCommand | undefined {
   const workspaceMatch = trimmed.match(/^\/workspace(?:\s+(.+))?$/s);
   if (workspaceMatch) {
     return { name: "workspace", path: workspaceMatch[1]?.trim() };
+  }
+  const thinkMatch = trimmed.match(/^\/think(?:\s+(.+))?$/s);
+  if (thinkMatch) {
+    return { name: "think", level: thinkMatch[1]?.trim() };
   }
   const configMatch = trimmed.match(/^\/config(?:\s+(.+))?$/s);
   if (configMatch) {
@@ -173,6 +180,7 @@ export function getCommandList(): string {
   return [
     "/new — 新建会话",
     "/resume — 恢复历史会话（卡片选择）",
+    "/sessions — 会话列表（同 /resume，一键切换）",
     "/model — 切换模型",
     "/workspace [path] — 切换工作区",
     "/status — 查看当前模型/目录/状态",
@@ -186,6 +194,7 @@ export function getCommandList(): string {
     "/reload — 重新加载 skills/工具（保留会话历史，下次消息生效）",
     "/compact — 压缩上下文，省 token",
     "/session — 查看会话元信息（名称/ID/token/上下文占比）",
+    "/think <off|low|medium|high> — 设置推理级别",
   ].join("\n");
 }
 
