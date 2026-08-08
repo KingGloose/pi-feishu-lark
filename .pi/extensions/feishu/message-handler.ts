@@ -11,6 +11,12 @@ import {
   setRuntimeConfig,
 } from "./runtime-config.js";
 import { conversationKey, conversationLabel, buildPromptWithQuote, getCommandList, normalizeForDedupe, parseBotCommand, parseMessageInput, pruneRecentMap } from "./messages.js";
+
+// /daily 手动触发用的 prompt(和 scheduler 的日报 prompt 一致,但跳过 should_send 检查)
+const DAILY_TRIGGER_PROMPT = [
+  "日报生成（手动触发）。读 skills/kg-daily-report/SKILL.md 并完整按它执行。",
+  "不要运行 should_send.py（手动触发跳过时间检查），直接采集数据并生成。",
+].join("");
 import { ReplyCard } from "./reply-card.js";
 import type { FeishuBridgeStore } from "./bridge-store.js";
 import type { FeishuTransport } from "./transport.js";
@@ -243,6 +249,15 @@ export class FeishuMessageHandler {
 
     if (command.name === "commands") {
       await transport.replyText(msg.messageId, `可用命令：\n${getCommandList()}`);
+      return true;
+    }
+
+    if (command.name === "daily") {
+      // 手动触发日报(和定时器同一注入逻辑)。
+      // 直接注入当前会话会让 AI 在当前上下文里跑日报流程。
+      await transport.replyText(msg.messageId, "⏳ 开始生成日报（读 SKILL 执行完整流程）…");
+      const pKey = conversationKey(msg);
+      await this.conversations.prompt(pKey, DAILY_TRIGGER_PROMPT, async () => {});
       return true;
     }
 

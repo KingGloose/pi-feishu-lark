@@ -9,6 +9,7 @@ import { debugLog } from "./debug.js";
 import { FeishuBridgeRuntime } from "./bridge-runtime.js";
 import { FeishuBridgeStore } from "./bridge-store.js";
 import { ConversationManager } from "./conversation-manager.js";
+import { Scheduler } from "./scheduler.js";
 import { FeishuDelivery } from "./delivery.js";
 import { acquireGatewayLock, gatewayLockPath, readGatewayOwner, type GatewayLockHandle, type GatewayOwner } from "./gateway-lock.js";
 import { FeishuMessageHandler } from "./message-handler.js";
@@ -39,6 +40,7 @@ export default function feishuExtension(pi: ExtensionAPI) {
   const delivery = new FeishuDelivery(() => transport);
   const bridge = new FeishuBridgeRuntime(bridgeStore, delivery);
   const conversations = new ConversationManager(process.cwd(), bridge);
+  let scheduler: Scheduler | undefined;
   const messageHandler = new FeishuMessageHandler(conversations, () => transport, bridgeStore);
 
   const STATUS_KEY = "feishu-connection";
@@ -458,6 +460,13 @@ export default function feishuExtension(pi: ExtensionAPI) {
   pi.on("session_start", async (_event, ctx) => {
     uiRef = ctx.ui as any;
     startStatusRefresh();
+    // 只在 daemon 进程里跑定时器(主进程只拉 daemon 不跑业务)
+    if (process.env.PI_FEISHU_DAEMON === "1") {
+      if (!scheduler) {
+        scheduler = new Scheduler(conversations);
+        scheduler.start();
+      }
+    }
   });
 
   if (bootConfig?.autoStart !== false) {
@@ -481,6 +490,8 @@ export default function feishuExtension(pi: ExtensionAPI) {
   }
 
   pi.on("session_shutdown", async () => {
+    scheduler?.stop();
+    scheduler = undefined;
     await stop();
     clearStatus();
   });

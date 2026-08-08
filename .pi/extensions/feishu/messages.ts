@@ -9,6 +9,7 @@ export type BotCommand =
   | { name: "workspace"; path?: string }
   | { name: "status" }
   | { name: "commands" }
+  | { name: "daily" }
   | { name: "config"; key?: string; value?: string; clearTarget?: string };
 
 type PostBody = {
@@ -111,6 +112,7 @@ export function parseBotCommand(text: string): BotCommand | undefined {
   if (normalized === "/status") return { name: "status" };
   if (normalized === "/commands") return { name: "commands" };
   if (normalized === "/help") return { name: "commands" };
+  if (normalized === "/daily") return { name: "daily" };
   const workspaceMatch = trimmed.match(/^\/workspace(?:\s+(.+))?$/s);
   if (workspaceMatch) {
     return { name: "workspace", path: workspaceMatch[1]?.trim() };
@@ -143,6 +145,7 @@ export function getCommandList(): string {
     "/config clear [key|all] — 清除 runtime overrides",
     "/commands — 显示命令列表",
     "/help — 显示命令列表（同 /commands）",
+    "/daily — 手动触发日报生成（跳过时间检查）",
   ].join("\n");
 }
 

@@ -1,0 +1,165 @@
+/**
+ * 日报 / 伙伴 定时调度器。
+ *
+ * 运行在 daemon 进程内(pi-feishu-lark 常驻的那个),不依赖主进程。
+ *
+ * ## 为什么放这里
+ *
+ * 原来的日报/伙伴定时器在主进程的 extension 里(daily-report.ts / companion.ts),
+ * 需要主进程常驻。现在把调度逻辑搬进 daemon:
+ *
+ *   daemon = 飞书连接 + 所有会话 + 定时器
+ *   主进程 = 完全不需要(可以关掉)
+ *
+ * ## 注入目标:超级agent 会话
+ *
+ * 日报/伙伴直接在用户的 p2p 私聊会话(超级agent)里跑:
+ *   key = `p2p:${open_id}`
+ *   open_id 从配置的 report.open_id 读(不硬编码,换应用改配置一处)
+ *
+ * 用户在超级agent 会话里看日报、追问日报 —— 同一上下文,天然接得上。
+ *
+ * ## 触发时机
+ *
+ * 日报: 每天 9:30 触发一次(过了时间点兜底补发到 11:00)
+ * 伙伴: 上次触发后随机 30~120 分钟
+ *
+ * 触发后 AI 自己读 SKILL.md、跑脚本、调 send_report.py 发送,
+ * 调度器只负责「到点注入 prompt」,不参与生成和发送。
+ */
+import { readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import type { ConversationManager } from "./conversation-manager.js";
+import { debugLog } from "./debug.js";
+
+const CHECK_INTERVAL_MS = 60_000;      // 每分钟检查一次
+const DAILY_HOUR = 9;
+const DAILY_MINUTE = 30;
+const DAILY_DEADLINE_HOUR = 11;        // 过了 11 点当天不再补发
+const COMPANION_MIN_MS = 30 * 60_000;  // 伙伴最小间隔 30 分钟
+const COMPANION_MAX_MS = 120 * 60_000; // 伙伴最大间隔 120 分钟
+
+const DAILY_PROMPT = [
+  "日报时间。读 skills/kg-daily-report/SKILL.md 并完整按它执行。",
+  "第一步先跑 should_send.py：退出码 1 就**安静结束**，",
+  "不要输出任何东西也不要告诉我原因；退出码 0 才继续生成和推送。",
+].join("");
+
+const COMPANION_PROMPT = [
+  "伙伴模式检查。读 skills/kg-companion/SKILL.md 并按它执行。",
+  "第一步必须先跑 pulse.py --json：",
+  "gate.can_talk 是 false 就**安静结束**，不要输出任何东西、",
+  "不要解释原因、不要说「暂时没什么要聊的」。",
+  "can_talk 是 true 也要自己判断值不值得开口 —— 没料就同样安静结束。",
+].join("");
+
+export class Scheduler {
+  private timer: ReturnType<typeof setInterval> | undefined;
+  private lastDailyDay = "";
+  private lastCompanionAt = 0;
+  private nextCompanionGapMs = 0;
+  private running = false;
+
+  constructor(private readonly conversations: ConversationManager) {}
+
+  start() {
+    if (this.timer) return;
+    this.lastCompanionAt = Date.now();
+    this.nextCompanionGapMs = this.randomGap();
+    this.timer = setInterval(() => void this.tick().catch(() => {}), CHECK_INTERVAL_MS);
+    this.timer.unref?.();
+    debugLog("feishu.scheduler.started", {});
+  }
+
+  stop() {
+    if (this.timer) {
+      clearInterval(this.timer);
+      this.timer = undefined;
+    }
+  }
+
+  private randomGap(): number {
+    return COMPANION_MIN_MS + Math.floor(Math.random() * (COMPANION_MAX_MS - COMPANION_MIN_MS));
+  }
+
+  /** 从配置拿超级agent 的会话 key。没有配置就跳过(不打扰)。 */
+  private targetKey(): string | undefined {
+    const openId = resolveOpenId();
+    if (!openId) {
+      debugLog("feishu.scheduler.no_target", {});
+      return undefined;
+    }
+    return `p2p:${openId}`;
+  }
+
+  private async tick() {
+    if (this.running) return;
+    this.running = true;
+    try {
+      const now = new Date();
+      // 本地日期(北京时间,进程时区)
+      const localDay = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+
+      // ── 日报: 9:30 到 11:00 之间,每天一次 ──
+      if (this.lastDailyDay !== localDay) {
+        const h = now.getHours();
+        const m = now.getMinutes();
+        const inWindow = (h === DAILY_HOUR && m >= DAILY_MINUTE) ||
+                         (h > DAILY_HOUR && h < DAILY_DEADLINE_HOUR) ||
+                         (h === DAILY_DEADLINE_HOUR && m === 0);
+        if (inWindow) {
+          this.lastDailyDay = localDay;
+          await this.fireDaily();
+        }
+      }
+
+      // ── 伙伴: 距上次超过随机间隔 ──
+      if (Date.now() - this.lastCompanionAt >= this.nextCompanionGapMs) {
+        this.lastCompanionAt = Date.now();
+        this.nextCompanionGapMs = this.randomGap();
+        await this.fireCompanion();
+      }
+    } finally {
+      this.running = false;
+    }
+  }
+
+  private async fireDaily() {
+    const key = this.targetKey();
+    if (!key) return;
+    debugLog("feishu.scheduler.daily_fire", { key });
+    try {
+      // 每次新建干净上下文(日报是独立内容,不需要历史)
+      await this.conversations.newConversation(key, async () => {});
+      await this.conversations.prompt(key, DAILY_PROMPT, async () => {});
+    } catch (e) {
+      debugLog("feishu.scheduler.daily_error", { error: e instanceof Error ? e.message : String(e) });
+    }
+  }
+
+  private async fireCompanion() {
+    const key = this.targetKey();
+    if (!key) return;
+    debugLog("feishu.scheduler.companion_fire", { key });
+    try {
+      await this.conversations.prompt(key, COMPANION_PROMPT, async () => {});
+    } catch (e) {
+      debugLog("feishu.scheduler.companion_error", { error: e instanceof Error ? e.message : String(e) });
+    }
+  }
+}
+
+/** 从 kg-wiki-agent 的配置读 report.open_id。 */
+function resolveOpenId(): string | undefined {
+  // 优先环境变量(agent 脚本注入时方便覆盖)
+  if (process.env.KG_REPORT_OPEN_ID) return process.env.KG_REPORT_OPEN_ID;
+  // 默认从 ~/.kg-agent-config/config.json 读 report.open_id
+  try {
+    const cfgPath = join(homedir(), ".kg-agent-config", "config.json");
+    const cfg = JSON.parse(readFileSync(cfgPath, "utf-8"));
+    const openId = cfg?.report?.open_id;
+    if (typeof openId === "string" && openId) return openId;
+  } catch {}
+  return undefined;
+}
