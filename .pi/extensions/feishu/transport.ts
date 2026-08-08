@@ -41,7 +41,7 @@ export class FeishuTransport {
   private readonly markdownCopySources = new Map<string, string>();
   private readonly markdownCopySourceOrder: string[] = [];
   private markdownCopySeq = 0;
-  /** 记录给每条消息加的「正在操作」表情，完成后撤销用 */
+  /** 记录给每条消息加的「正在操作」表情的 reaction_id，完成后撤销用 */
   private readonly reactionByMessage = new Map<string, string>();
 
   private sendRetries() {
@@ -224,11 +224,17 @@ export class FeishuTransport {
     };
 
     if (cfg.reactEmoji) {
-      // 从表情池里随机选一个（不总是同一个）
-      const pool = (cfg.reactEmoji || REACTION_POOL[0]);
-      const picked = REACTION_POOL.includes(pool) ? pool : REACTION_POOL[Math.floor(Math.random() * REACTION_POOL.length)];
-      void this.addReaction(msg.messageId, picked);
-      this.reactionByMessage.set(msg.messageId, picked);
+      // 随机表情：默认从池子里随机挑一个。
+      // 只有用户显式配置了自定义表情（且不在默认池时）才固定用配置的。
+      // 注意：不能拿 cfg.reactEmoji 直接当候选 —— 它的默认值是 "Get"，
+      // 恰好也在池里，会导致永远选 Get，随机逻辑失效。
+      const custom = cfg.reactEmoji !== "Get" ? cfg.reactEmoji : undefined;
+      const picked = custom && !REACTION_POOL.includes(custom)
+        ? custom
+        : REACTION_POOL[Math.floor(Math.random() * REACTION_POOL.length)];
+      void this.addReaction(msg.messageId, picked).then((reactionId) => {
+        if (reactionId) this.reactionByMessage.set(msg.messageId, reactionId);
+      });
     }
     debugLog("feishu.message.dispatch", { messageId: msg.messageId });
     void this.onMessage(msg).catch((error) => {
@@ -330,30 +336,37 @@ export class FeishuTransport {
     }
   }
 
-  private async addReaction(messageId: string, emojiType: string) {
+  /** 添加 reaction，返回飞书生成的 reaction_id（删除时要用真实 id，emoji 名无效）。 */
+  private async addReaction(messageId: string, emojiType: string): Promise<string | null> {
     try {
-      await this.sdkClient.im.messageReaction.create({
+      const resp = await this.sdkClient.im.messageReaction.create({
         path: { message_id: messageId },
         data: { reaction_type: { emoji_type: emojiType } },
       });
-    } catch {}
+      return resp?.data?.reaction_id ?? null;
+    } catch (e) {
+      debugLog("feishu.reaction.add_failed", { messageId, emojiType, error: e instanceof Error ? e.message : String(e) });
+      return null;
+    }
   }
 
-  /** 删除 reaction（处理完成后撤销「正在操作」的表情）。 */
-  async removeReaction(messageId: string, emojiType: string) {
+  /** 删除 reaction（处理完成后撤销「正在操作」的表情），reaction_id 是飞书生成的真实 id。 */
+  async removeReaction(messageId: string, reactionId: string) {
     try {
       await this.sdkClient.im.messageReaction.delete({
-        path: { message_id: messageId, reaction_id: emojiType },
+        path: { message_id: messageId, reaction_id: reactionId },
       });
-    } catch {}
+    } catch (e) {
+      debugLog("feishu.reaction.remove_failed", { messageId, reactionId, error: e instanceof Error ? e.message : String(e) });
+    }
   }
 
   /** 撤销某条消息的「正在操作」表情（处理完成时调用）。 */
   async clearReaction(messageId: string) {
-    const emoji = this.reactionByMessage.get(messageId);
-    if (!emoji) return;
+    const reactionId = this.reactionByMessage.get(messageId);
+    if (!reactionId) return;
     this.reactionByMessage.delete(messageId);
-    await this.removeReaction(messageId, emoji);
+    await this.removeReaction(messageId, reactionId);
   }
 
   async replyText(messageId: string, text: string) {
