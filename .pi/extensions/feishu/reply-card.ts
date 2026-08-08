@@ -138,8 +138,8 @@ export class ReplyCard implements ReplyCardSink {
       parts.push(`↑${fmt(this.usage.input)} ↓${fmt(this.usage.output)}`);
       if (this.usage.cacheRead) parts.push(`缓存读 ${fmt(this.usage.cacheRead)}`);
     }
-    // 会话id：短格式，方便在 TUI /resume 里定位。完整 id 在注记里太长。
-    if (this.sessionId) parts.push(`会话 ${this.sessionId.slice(0, 8)}`);
+    // 会话id：完整展示，方便在 /resume 或 TUI 里精确定位。
+    if (this.sessionId) parts.push(`会话 ${this.sessionId}`);
     return parts.join(" · ");
   }
 

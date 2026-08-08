@@ -43,11 +43,13 @@ export class FeishuMessageHandler {
     const transport = this.getTransport();
     if (!transport) return;
 
+    let handledMsg = false;
     try {
       if (this.seen.has(msg.messageId)) return;
       if (!(await claimFeishuMessage(msg.messageId))) return;
       this.seen.add(msg.messageId);
       if (this.seen.size > 2000) this.seen.clear();
+      handledMsg = true;
 
       const cfg = loadConfig();
       const parsed = parseMessageInput(msg, transport.getBotOpenId(), {
@@ -170,6 +172,11 @@ export class FeishuMessageHandler {
       debugLog("feishu.handler.error", { messageId: msg.messageId, error: message });
       await markFeishuMessage(msg.messageId, "failed", message);
       await this.getTransport()?.replyText(msg.messageId, `Pi error: ${message}`);
+    } finally {
+      // 只有真正处理过的消息才撤销「正在操作」的表情
+      if (handledMsg) {
+        await this.getTransport()?.clearReaction(msg.messageId).catch(() => {});
+      }
     }
   }
 

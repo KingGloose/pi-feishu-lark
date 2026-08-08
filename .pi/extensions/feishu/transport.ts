@@ -12,6 +12,15 @@ import { FeishuCardActionWebhook } from "./card-action-webhook.js";
 
 const TEXT_CHUNK_MAX_BYTES = 120 * 1024;
 
+// 「正在操作」表情池：收到消息时随机挑一个，完成后撤销。
+// 都是飞书支持的标准 emoji 类型。
+const REACTION_POOL = [
+  "Get", "OK", "TOUCH", "THUMBSUP",
+  "UNDERSTAND", "SPEECHLESS", "SMART", "GREAT",
+  "YES", "NO", "LAUGH", "HUAHUO",
+  "CRAZY", "BANANA", "TADA", "LOVE",
+];
+
 export class BotUnavailableError extends Error {
   constructor(message: string) {
     super(message);
@@ -32,6 +41,8 @@ export class FeishuTransport {
   private readonly markdownCopySources = new Map<string, string>();
   private readonly markdownCopySourceOrder: string[] = [];
   private markdownCopySeq = 0;
+  /** 记录给每条消息加的「正在操作」表情，完成后撤销用 */
+  private readonly reactionByMessage = new Map<string, string>();
 
   private sendRetries() {
     return this.config.sendMaxRetries ?? 2;
@@ -213,7 +224,11 @@ export class FeishuTransport {
     };
 
     if (cfg.reactEmoji) {
-      void this.addReaction(msg.messageId, cfg.reactEmoji);
+      // 从表情池里随机选一个（不总是同一个）
+      const pool = (cfg.reactEmoji || REACTION_POOL[0]);
+      const picked = REACTION_POOL.includes(pool) ? pool : REACTION_POOL[Math.floor(Math.random() * REACTION_POOL.length)];
+      void this.addReaction(msg.messageId, picked);
+      this.reactionByMessage.set(msg.messageId, picked);
     }
     debugLog("feishu.message.dispatch", { messageId: msg.messageId });
     void this.onMessage(msg).catch((error) => {
@@ -322,6 +337,23 @@ export class FeishuTransport {
         data: { reaction_type: { emoji_type: emojiType } },
       });
     } catch {}
+  }
+
+  /** 删除 reaction（处理完成后撤销「正在操作」的表情）。 */
+  async removeReaction(messageId: string, emojiType: string) {
+    try {
+      await this.sdkClient.im.messageReaction.delete({
+        path: { message_id: messageId, reaction_id: emojiType },
+      });
+    } catch {}
+  }
+
+  /** 撤销某条消息的「正在操作」表情（处理完成时调用）。 */
+  async clearReaction(messageId: string) {
+    const emoji = this.reactionByMessage.get(messageId);
+    if (!emoji) return;
+    this.reactionByMessage.delete(messageId);
+    await this.removeReaction(messageId, emoji);
   }
 
   async replyText(messageId: string, text: string) {
