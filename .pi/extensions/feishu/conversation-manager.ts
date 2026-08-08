@@ -10,6 +10,7 @@ import {
   SessionManager,
 } from "@earendil-works/pi-coding-agent";
 import type { FeishuBridgeRuntime } from "./bridge-runtime.js";
+import { makeFeishuCustomTools, type FeishuCustomToolDeps } from "./feishu-tools.js";
 import { CHILD_SESSION_ENV, ensureRoot, loadConfig, readJson, STATE_PATH, writeJson } from "./config.js";
 import { debugLog } from "./debug.js";
 import { waitForPrompt } from "./prompt-timeout.js";
@@ -56,6 +57,13 @@ export class ConversationManager {
     this.state.workspaces ||= {};
     this.loadSettingsDefault();
   }
+
+  /** 注入子会话自定义工具依赖（ask_feishu 等），由 index.ts 在 clarify 创建后调用 */
+  setCustomToolDeps(deps: FeishuCustomToolDeps) {
+    this.customToolDeps = deps;
+  }
+
+  private customToolDeps: FeishuCustomToolDeps | undefined;
 
   /** Read global settings default model for fallback in getSelectedModel. */
   private loadSettingsDefault() {
@@ -571,6 +579,7 @@ export class ConversationManager {
       else process.env[CHILD_SESSION_ENV] = previousChildEnv;
     }
 
+    const customTools = this.customToolDeps ? makeFeishuCustomTools(this.customToolDeps) : [];
     const { session } = await createAgentSession({
       cwd: workspaceCwd,
       agentDir: getAgentDir(),
@@ -578,6 +587,18 @@ export class ConversationManager {
       model,
       sessionManager,
       resourceLoader: loader,
+      // 子会话工具列表独立于主进程注册的 extension tools ——
+      // 实测子会话只有默认 19 个(read/bash/...)，没有 ask_feishu/search_bilibili。
+      // 必须通过 customTools + tools 白名单显式传入。
+      customTools,
+      tools: [
+        "read", "bash", "edit", "write",
+        "memory_add", "memory_replace", "memory_remove",
+        "skill_manage", "session_search", "memory_search",
+        "ffgrep", "fffind", "grep", "find", "ls",
+        "web_search", "source_check", "fetch_content", "get_search_content",
+        ...(customTools.length ? customTools.map((t) => t.name) : []),
+      ],
     });
 
     await session.bindExtensions({});

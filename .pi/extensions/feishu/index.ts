@@ -59,6 +59,8 @@ export default function feishuExtension(pi: ExtensionAPI) {
   });
   registerAskFeishuTool(pi, clarify, bridgeStore);
   registerSearchBilibiliTool(pi);
+  // 把澄清依赖注入子会话工具（ask_feishu 在子会话里也能用）
+  conversations.setCustomToolDeps({ clarify, bridgeStore });
 
   const STATUS_KEY = "feishu-connection";
   const STATUS_REFRESH_MS = 2_000;
