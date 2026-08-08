@@ -24,6 +24,8 @@ type ActiveRun = {
   status?: ReplyCardSink;
   /** 当前轮流式回调（由 promptWithImages 设置） */
   onDelta?: (delta: string) => void;
+  /** 过程面板事件（工具调用/推理）转发给外部 panel */
+  onPanelEvent?: (event: unknown) => void;
 };
 
 export type StopConversationResult =
@@ -79,13 +81,14 @@ export class ConversationManager {
     onReply: (text: string) => Promise<void>,
     status?: ReplyCardSink,
     onDelta?: (delta: string) => void,
+    onPanelEvent?: (event: unknown) => void,
   ) {
     const previous = this.previousTurn(key);
     const startedAt = Date.now();
     const next = previous.then(async () => {
       debugLog("feishu.prompt.start", { key, textLength: userText.length, imageCount: images.length });
       const session = await this.getSession(key);
-      const run: ActiveRun = { session, runId: status?.runId, stopped: false, status, onDelta };
+      const run: ActiveRun = { session, runId: status?.runId, stopped: false, status, onDelta, onPanelEvent };
       this.activeRuns.set(key, run);
       this.bridge?.beginFeishuInput(session.sessionId);
       // 把 pi 会话 id 告诉卡片（显示在底部注记里，方便 /resume 定位）
@@ -526,6 +529,20 @@ export class ConversationManager {
     session.subscribe((event: any) => {
       const run = this.activeRuns.get(key);
       run?.status?.updateFromEvent(event);
+      // 工具调用/推理事件 → 转发给外部过程面板
+      if (run?.onPanelEvent && event && typeof event === "object") {
+        const t = event.type;
+        if (t === "tool_execution_start" || t === "tool_execution_update" || t === "tool_execution_end") {
+          run.onPanelEvent(event);
+        } else if (t === "message_update") {
+          const ame = event.assistantMessageEvent;
+          if (ame?.type === "thinking_delta" && typeof ame.delta === "string" && ame.delta) {
+            run.onPanelEvent(event);
+          } else if (ame?.type === "thinking_end") {
+            run.onPanelEvent?.({ type: "thinking_flush" });
+          }
+        }
+      }
       const delta = extractAssistantTextDelta(event);
       if (delta && run && !run.stopped) {
         // 优先 onDelta（与 prompt 绑定）；否则直接 append 到 status 卡

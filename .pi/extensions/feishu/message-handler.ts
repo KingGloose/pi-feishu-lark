@@ -22,6 +22,7 @@ const DAILY_TRIGGER_PROMPT = [
   "不要运行 should_send.py（手动触发跳过时间检查），直接采集数据并生成。",
 ].join("");
 import { ReplyCard } from "./reply-card.js";
+import { PanelCard } from "./panel-card.js";
 import type { FeishuBridgeStore } from "./bridge-store.js";
 import type { FeishuTransport } from "./transport.js";
 import type { FeishuAttachment, FeishuMessage } from "./types.js";
@@ -209,6 +210,11 @@ export class FeishuMessageHandler {
       });
       await card.start();
 
+      // 过程面板：第一张卡展示工具调用 + 推理时间线（默认展开），
+      // 完成后第二张卡（上面）流式答案。
+      const panelCard = new PanelCard(transport, msg.messageId);
+      await panelCard.start();
+
       await this.conversations.promptWithImages(
         key,
         prompt,
@@ -218,7 +224,9 @@ export class FeishuMessageHandler {
         },
         card,
         useStreaming ? (delta) => card.append(delta) : undefined,
+        (event) => panelCard.onEvent(event),
       );
+      await panelCard.finish();
       await markFeishuMessage(msg.messageId, "replied");
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
