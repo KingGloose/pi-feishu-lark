@@ -460,33 +460,26 @@ export default function feishuExtension(pi: ExtensionAPI) {
   pi.on("session_start", async (_event, ctx) => {
     uiRef = ctx.ui as any;
     startStatusRefresh();
-    // 只在 daemon 进程里跑定时器(主进程只拉 daemon 不跑业务)
-    if (process.env.PI_FEISHU_DAEMON === "1") {
-      if (!scheduler) {
-        scheduler = new Scheduler(conversations);
-        scheduler.start();
-      }
+    // 主进程自己连飞书 + 跑定时器(不再用 daemon 模式)。
+    // 用户要求:终端关了全部停 —— 不残留后台进程。
+    if (!scheduler) {
+      scheduler = new Scheduler(conversations);
+      scheduler.start();
     }
   });
 
   if (bootConfig?.autoStart !== false) {
-    if (process.env.PI_FEISHU_DAEMON === "1") {
-      start().then((result) => {
-        if (typeof result === "object" && result.status === "owned") {
-          console.error("[feishu] daemon found existing owner, exiting:", formatOwner(result.owner));
-          process.exit(0);
-        }
-      }).catch((error) => {
-        updateStatus(error instanceof BotUnavailableError ? "bot unavailable" : "disconnected");
-        console.error("[feishu] daemon autoStart failed:", error instanceof Error ? error.message : error);
-        process.exit(1);
-      });
-    } else {
-      startDaemon(false).catch((error) => {
-        updateStatus("disconnected");
-        console.error("[feishu] daemon spawn failed:", error instanceof Error ? error.message : error);
-      });
-    }
+    // 主进程直接连飞书(不拉 daemon)。终端关 = 进程停 = 全停。
+    start().then((result) => {
+      if (typeof result === "object" && result.status === "owned") {
+        console.error("[feishu] existing owner, exiting:", formatOwner(result.owner));
+        process.exit(0);
+      }
+    }).catch((error) => {
+      updateStatus(error instanceof BotUnavailableError ? "bot unavailable" : "disconnected");
+      console.error("[feishu] autoStart failed:", error instanceof Error ? error.message : error);
+      process.exit(1);
+    });
   }
 
   pi.on("session_shutdown", async () => {
