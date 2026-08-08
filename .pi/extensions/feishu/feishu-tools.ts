@@ -1,18 +1,15 @@
 /**
- * 子会话专用工具：ask_feishu / search_bilibili。
+ * 子会话专用工具：ask_feishu（交互澄清卡）。
  *
  * 背景：createAgentSession 的子会话工具列表独立于主进程 extension 注册的工具，
  * 子会话只有默认 19 个（read/bash/edit/write + memory + search 等）。
- * 要让飞书对话里的 AI 能发交互卡、搜 B 站，必须通过 customTools 传入。
+ * 要让飞书对话里的 AI 能发交互卡，必须通过 customTools 传入。
  *
- * 这两个工具同时也在主进程 registerTool 注册（保持一致性），
- * 但子会话只认这里 customTools 传入的定义。
+ * B 站搜索不在这里 —— 那是「跑一个 python 脚本」的事，AI 用 bash 就能做，
+ * 规范写在 kg-wiki-agent/AGENTS.md（禁止编 BV 号 + 必须给完整链接）。
  */
-import { existsSync } from "node:fs";
-import { spawnSync } from "node:child_process";
 import { Type } from "typebox";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
-import { debugLog } from "./debug.js";
 import type { ClarifyManager, ClarifyOption } from "./clarify.js";
 import type { FeishuBridgeStore } from "./bridge-store.js";
 
@@ -72,64 +69,6 @@ export function makeAskFeishuTool(deps: FeishuCustomToolDeps): ToolDefinition {
   };
 }
 
-/** search_bilibili：搜 B 站视频，返回完整可点击链接。 */
-export function makeSearchBilibiliTool(): ToolDefinition {
-  return {
-    name: "search_bilibili",
-    label: "Search Bilibili Videos",
-    description:
-      "按关键词搜索 B 站视频，返回含完整可点击链接的结果（标题/BV号/作者/时长/播放量）。\n" +
-      "**当用户要教程/方案/推荐，需要附视频佐证时用它**——搜出 1-2 个相关视频附在回答末尾。\n" +
-      "链接必须用返回的 url 字段（https://www.bilibili.com/video/<BV号>），不要自己拼、不要只给 BV 号。",
-    promptSnippet:
-      "Need video evidence for a tutorial/recommendation → search_bilibili returns clickable links; always use the url field.",
-    parameters: Type.Object({
-      keyword: Type.String({ description: "搜索关键词（取用户问题的核心词）" }),
-      limit: Type.Optional(Type.Number({ description: "返回条数，默认 3" })),
-    }),
-    async execute(_toolCallId, params: { keyword: string; limit?: number }) {
-      const keyword = String(params.keyword || "").trim();
-      if (!keyword) return textResult("缺少 keyword 参数。");
-      const skillsRoot = process.env.KG_WIKI_SKILLS_ROOT || "";
-      const searchPy = skillsRoot
-        ? `${skillsRoot}/kg-ingest/references/bilibili/search_videos.py`
-        : "";
-      if (!searchPy || !existsSync(searchPy)) {
-        return textResult(
-          "找不到 B 站搜索脚本（KG_WIKI_SKILLS_ROOT 未配置或脚本缺失）。可以先给文字教程。",
-        );
-      }
-      const limit = Math.min(5, Math.max(1, Number(params.limit) || 3));
-      const python = process.env.KG_VENV ? `${process.env.KG_VENV}/python` : "python3";
-      try {
-        const r = spawnSync(python, [searchPy, keyword, "--order", "click", "--limit", String(limit)], {
-          encoding: "utf8",
-          timeout: 25_000,
-        });
-        if (r.status !== 0) {
-          return textResult(`B 站搜索失败：${(r.stderr || "").slice(0, 200) || "非零退出码"}`);
-        }
-        const arrMatch = r.stdout.match(/\[[\s\S]*\]/);
-        if (!arrMatch) return textResult("B 站搜索无结果（或返回格式异常）。");
-        const videos = JSON.parse(arrMatch[0]);
-        if (!Array.isArray(videos) || !videos.length) {
-          return textResult(`「${keyword}」没有搜到相关视频。`);
-        }
-        const lines = videos.map((v: any, i: number) => {
-          const url = v.url || `https://www.bilibili.com/video/${v.bvid}`;
-          return `${i + 1}. ${v.title || "（无标题）"}\n   ${url}\n   作者：${v.author || "?"} · ${v.duration || "?"} · ${v.play != null ? `${v.play} 播放` : ""}`;
-        });
-        return textResult(`搜到 ${videos.length} 个视频：\n${lines.join("\n")}`);
-      } catch (error) {
-        return textResult(
-          `B 站搜索异常：${error instanceof Error ? error.message : String(error)}`,
-        );
-      }
-    },
-  };
-}
-
-/** 子会话要用的自定义工具（customTools 传入） */
 export function makeFeishuCustomTools(deps: FeishuCustomToolDeps): ToolDefinition[] {
-  return [makeAskFeishuTool(deps), makeSearchBilibiliTool()];
+  return [makeAskFeishuTool(deps)];
 }

@@ -588,8 +588,9 @@ export class ConversationManager {
       sessionManager,
       resourceLoader: loader,
       // 子会话工具列表独立于主进程注册的 extension tools ——
-      // 实测子会话只有默认 19 个(read/bash/...)，没有 ask_feishu/search_bilibili。
+      // 实测子会话只有默认 19 个(read/bash/...)，没有 ask_feishu。
       // 必须通过 customTools + tools 白名单显式传入。
+      // (B站搜索不走工具 —— 那是 bash 跑脚本的事,规范在 AGENTS.md)
       customTools,
       tools: [
         "read", "bash", "edit", "write",
