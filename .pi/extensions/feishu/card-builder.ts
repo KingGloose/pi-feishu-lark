@@ -52,14 +52,20 @@ export function buildCardKitCardJson(input: {
       elements.push(buildStopButton(input.key, input.runId));
     }
   } else if (input.status === "done") {
-    // 正文 + 底部注记（耗时/token）。note 是 buildFinalNote 生成的。
-    const parts: string[] = [body || " "];
-    if (note) parts.push(note);
+    // 正文 + 分割线 + 底部注记（耗时/token/会话id）
     elements.push({
       tag: "markdown",
-      content: parts.join("\n\n"),
+      content: body || " ",
       element_id: "content",
     });
+    if (note) {
+      elements.push({ tag: "hr" });
+      elements.push({
+        tag: "markdown",
+        content: note,
+        element_id: "note",
+      });
+    }
   } else {
     const parts: string[] = [];
     if (note) parts.push(note);
@@ -134,6 +140,14 @@ export function buildReplyCard(input: {
       tag: "div",
       text: { tag: "lark_md", content: body || " " },
     });
+    // 分割线 + 底部注记（耗时/token/会话id）
+    if (note) {
+      elements.push({ tag: "hr" });
+      elements.push({
+        tag: "div",
+        text: { tag: "lark_md", content: note },
+      });
+    }
   } else {
     if (note) {
       elements.push({
