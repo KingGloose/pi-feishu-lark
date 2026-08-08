@@ -44,6 +44,7 @@ export const DEFAULT_CONFIG: Pick<
   | "streamFirstFlushMs"
   | "streamMinChars"
   | "streamMaxBodyChars"
+  | "assetArchiveCmd"
 > = {
   domain: "feishu",
   groupPolicy: "open",
@@ -75,6 +76,7 @@ export const DEFAULT_CONFIG: Pick<
   streamFirstFlushMs: 50,
   streamMinChars: 8,
   streamMaxBodyChars: 12000,
+  assetArchiveCmd: undefined,
 };
 
 export function ensureRoot() {
@@ -142,6 +144,9 @@ function applyRuntimeDefaults(cfg: FeishuConfig): FeishuConfig {
     streamFirstFlushMs: cfg.streamFirstFlushMs ?? DEFAULT_CONFIG.streamFirstFlushMs,
     streamMinChars: cfg.streamMinChars ?? DEFAULT_CONFIG.streamMinChars,
     streamMaxBodyChars: cfg.streamMaxBodyChars ?? DEFAULT_CONFIG.streamMaxBodyChars,
+    assetArchiveCmd: typeof cfg.assetArchiveCmd === "string" && cfg.assetArchiveCmd
+      ? cfg.assetArchiveCmd
+      : DEFAULT_CONFIG.assetArchiveCmd,
   };
 }
 

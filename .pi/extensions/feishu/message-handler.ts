@@ -247,6 +247,13 @@ export class FeishuMessageHandler {
       return true;
     }
 
+    if (command.name === "reload") {
+      await this.conversations.reloadConversation(key, async (reply) => {
+        await transport.replyText(msg.messageId, reply);
+      });
+      return true;
+    }
+
     if (command.name === "model") {
       const models = await this.conversations.getAvailableModels();
       if (!models.length) {

@@ -258,6 +258,27 @@ export class ConversationManager {
     await next;
   }
 
+  /**
+   * 重新加载：dispose 当前会话 + 删缓存，但保留 state.sessions 指向的会话文件。
+   * 下一条消息 getSession 时会重建会话 → loader.reload() 重新加载 skills/工具。
+   * 效果等于「热重载 skills」，且不丢历史。
+   */
+  async reloadConversation(key: string, onReply: (text: string) => Promise<void>) {
+    const previous = this.previousTurn(key);
+    const next = previous.then(async () => {
+      const cached = this.sessions.get(key);
+      if (cached) {
+        try { (await cached).dispose(); } catch {}
+      }
+      this.sessions.delete(key);
+      await onReply("已重新加载 skills/工具。会话历史保留，下一条消息生效。");
+    }).catch(async (error) => {
+      await onReply(`Pi error: ${error instanceof Error ? error.message : String(error)}`);
+    });
+    this.queues.set(key, next);
+    await next;
+  }
+
   async listResumeSessions(key: string, scope: ResumeScope, page: number): Promise<ResumeSessionPage> {
     const sessions = await this.getResumeSessions(key, scope);
     const normalizedPage = Math.max(0, Math.floor(page));
