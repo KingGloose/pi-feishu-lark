@@ -265,7 +265,11 @@ export class ReplyCard implements ReplyCardSink {
   }
 
   async completeWithAnswer(answer: string) {
-    this.ensureFinal(answer || "（无内容）");
+    // 空 answer（模型只调工具没输出文本）：保留已流式内容，不覆盖
+    const finalText = answer?.trim()
+      ? answer
+      : (this.body?.trim() ? this.body : "（没有生成内容，可能是模型只执行了工具调用）");
+    this.ensureFinal(finalText);
     await this.finishFinal("done", this.buildFinalNote());
   }
 

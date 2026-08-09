@@ -171,7 +171,7 @@ export class ConversationManager {
         elapsedSec,
         usage: usage ? { input: usage.input, output: usage.output } : null,
       });
-      await onReply(answer || "No response.");
+      await onReply(answer || "");
       // onReply（ReplyCard.completeWithAnswer）已切到 done；此处仅兜底
       await status?.finish("done");
     }).catch(async (error) => {
@@ -791,12 +791,19 @@ function extractLastAssistantText(session: AgentSession): string {
   for (const msg of messages as any[]) {
     if (msg.role !== "assistant") continue;
     const content = msg.content;
-    if (typeof content === "string") return content.trim();
+    if (typeof content === "string") {
+      const t = content.trim();
+      if (t) return t;
+      continue;
+    }
     if (Array.isArray(content)) {
-      return content
+      const t = content
         .map((p) => p?.type === "text" ? p.text : "")
         .join("")
         .trim();
+      if (t) return t;
+      // 纯 thinking / 纯 tool_use 消息无文本 → 继续往前找
+      continue;
     }
   }
   return "";
