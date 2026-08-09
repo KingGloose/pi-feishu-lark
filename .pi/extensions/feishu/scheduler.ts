@@ -41,8 +41,8 @@ const DIGEST_HOUR = 6;
 const DIGEST_MINUTE = 30;              // 每日记忆整理 06:30
 const WEEKLY_HOUR = 20;
 const WEEKLY_MINUTE = 0;               // 周报朋友来信 周日 20:00
-const COMPANION_MIN_MS = 30 * 60_000;  // 伙伴最小间隔 30 分钟
-const COMPANION_MAX_MS = 120 * 60_000; // 伙伴最大间隔 120 分钟
+const COMPANION_MIN_MS = 25 * 60_000;  // 伙伴最小间隔 25 分钟
+const COMPANION_MAX_MS = 80 * 60_000; // 伙伴最大间隔 80 分钟
 
 // 测试模式：环境变量覆盖触发时间，测完去掉即可恢复正式节奏。
 //   KG_SCHED_DAILY_SECS=<秒>    启动后 N 秒触发一次日报
