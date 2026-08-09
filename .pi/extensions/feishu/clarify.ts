@@ -24,6 +24,8 @@ interface Pending {
   reject: (error: Error) => void;
   timer: ReturnType<typeof setTimeout>;
   settled: boolean;
+  /** 多选模式：已选中的 value 集合 */
+  selected?: Set<string>;
 }
 
 type ClarifyTransport = {
@@ -56,25 +58,58 @@ export class ClarifyManager {
     options: ClarifyOption[],
     timeoutMs = 300_000,
     allowInput = false,
+    allowMulti = false,
   ): Promise<string> {
     if (this.hasPending) throw new Error("已有一个等待中的澄清请求");
     const id = `clarify-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    const messageId = await this.transport.sendCard(chatId, this.buildCard(id, question, options, allowInput));
+    const messageId = await this.transport.sendCard(chatId, this.buildCard(id, question, options, allowInput, allowMulti));
     if (!messageId) throw new Error("澄清卡片发送失败");
 
     return new Promise<string>((resolve, reject) => {
       const timer = setTimeout(() => {
         void this.finish("timeout", new Error("澄清请求超时"));
       }, timeoutMs);
-      this.pending = { id, options, resolve, reject, timer, settled: false };
-      debugLog("feishu.clarify.asked", { id, options: options.length, timeoutMs, allowInput });
+      this.pending = {
+        id, options, resolve, reject, timer, settled: false,
+        selected: allowMulti ? new Set() : undefined,
+      };
+      debugLog("feishu.clarify.asked", { id, options: options.length, timeoutMs, allowInput, allowMulti });
     });
   }
 
   /** 卡片回调入口：匹配 clarify_id + 选择值 → resolve */
-  async handleAction(action: { clarifyId: string; choice?: string; inputValue?: string; messageId?: string }): Promise<boolean> {
+  async handleAction(action: {
+    clarifyId: string;
+    choice?: string;
+    inputValue?: string;
+    messageId?: string;
+    /** 多选切换：选中/取消一个选项 */
+    toggle?: string;
+    /** 多选确认：提交当前所有选中 */
+    confirm?: boolean;
+  }): Promise<boolean> {
     const pending = this.pending;
     if (!pending || pending.settled || pending.id !== action.clarifyId) return false;
+
+    if (pending.selected) {
+      // 多选模式
+      if (action.toggle != null) {
+        // 切换选中状态 → 更新卡片上的勾选展示，不 resolve
+        if (pending.selected.has(action.toggle)) pending.selected.delete(action.toggle);
+        else pending.selected.add(action.toggle);
+        await this.refreshMultiCard(pending, action.messageId).catch(() => {});
+        return true;
+      }
+      if (action.confirm) {
+        // 确认提交：全部选中的 value 用逗号拼接
+        const chosen = Array.from(pending.selected);
+        const label = chosen.map((v) => pending.options.find((o) => o.value === v)?.label ?? v).join(", ");
+        await this.finish("submitted", undefined, chosen.join(","), label || "（未选择）");
+        return true;
+      }
+      return false;
+    }
+
     if (action.inputValue != null && action.inputValue.trim()) {
       // 自由输入：用户在输入框里打了字提交
       const text = action.inputValue.trim().slice(0, 200);
@@ -110,8 +145,9 @@ export class ClarifyManager {
     else pending.resolve(choice ?? "");
   }
 
-  /** schema 2.0 澄清卡：问题 + 选项按钮 + 可选输入框（自由输入） */
-  private buildCard(id: string, question: string, options: ClarifyOption[], allowInput = false): object {
+  /** schema 2.0 澄清卡：问题 + 选项按钮 + 可选输入框（自由输入）
+   *  allowMulti=true 时：复选框列表 + 确认按钮（先勾选再确认） */
+  private buildCard(id: string, question: string, options: ClarifyOption[], allowInput = false, allowMulti = false): object {
     const letters = ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J"];
     const elements: object[] = [
       {
@@ -121,23 +157,69 @@ export class ClarifyManager {
         text_size: "title_2",
       },
       { tag: "hr" },
-      ...options.map((option, index) => ({
+    ];
+
+    if (allowMulti) {
+      // 多选：每个选项是可点选的「伪复选框」（点按切换选中，确认按钮提交）
+      elements.push({
+        tag: "markdown",
+        content: "☑️ **可多选，点选项切换选中，最后点「确认」**",
+        text_size: "notation",
+      });
+      elements.push(
+        ...options.map((option, index) => ({
+          tag: "button",
+          text: { tag: "plain_text", content: `${letters[index]}. ${option.label}` },
+          type: "default",
+          width: "fill",
+          margin: "8px 0 4px 0",
+          behaviors: [
+            {
+              type: "callback",
+              value: {
+                clarify_id: id,
+                toggle: option.value,
+              },
+            },
+          ],
+        })),
+      );
+      elements.push({
         tag: "button",
-        text: { tag: "plain_text", content: `${letters[index]}. ${option.label}` },
-        type: index === 0 ? "primary" : "default",
+        text: { tag: "plain_text", content: "✅ 确认选择" },
+        type: "primary",
         width: "fill",
-        margin: "8px 0 4px 0",
+        margin: "12px 0 0 0",
         behaviors: [
           {
             type: "callback",
             value: {
               clarify_id: id,
-              choice: option.value,
+              confirm: true,
             },
           },
         ],
-      })),
-    ];
+      });
+    } else {
+      elements.push(
+        ...options.map((option, index) => ({
+          tag: "button",
+          text: { tag: "plain_text", content: `${letters[index]}. ${option.label}` },
+          type: index === 0 ? "primary" : "default",
+          width: "fill",
+          margin: "8px 0 4px 0",
+          behaviors: [
+            {
+              type: "callback",
+              value: {
+                clarify_id: id,
+                choice: option.value,
+              },
+            },
+          ],
+        })),
+      );
+    }
     if (allowInput) {
       // 自由输入框：用户打字后点输入框的提交图标触发回调
       // 回调里 action.input_value = 用户输入, action.value = { clarify_id }
@@ -166,7 +248,7 @@ export class ClarifyManager {
     return {
       schema: "2.0",
       header: {
-        title: { tag: "plain_text", content: "需要你确认" },
+        title: { tag: "plain_text", content: allowMulti ? "需要你多选确认" : "需要你确认" },
         template: "blue",
       },
       body: {
@@ -175,5 +257,68 @@ export class ClarifyManager {
         elements,
       },
     };
+  }
+
+  /** 多选：重新渲染卡片，展示当前选中状态（勾选标记） */
+  private async refreshMultiCard(pending: Pending, messageId?: string): Promise<void> {
+    if (!messageId) return;
+    // 用选中状态重绘：更新问题下方提示 + 给已选按钮加高亮（通过重发卡片）
+    const letters = ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J"];
+    const elements: object[] = [
+      {
+        tag: "markdown",
+        element_id: QUESTION_ELEMENT_ID,
+        content: `已选 ${pending.selected?.size ?? 0} 项，点选项切换，最后点「确认」`,
+        text_size: "title_2",
+      },
+      { tag: "hr" },
+      ...pending.options.map((option, index) => {
+        const isOn = pending.selected?.has(option.value) ?? false;
+        return {
+          tag: "button",
+          text: { tag: "plain_text", content: `${isOn ? "✅ " : "☐ "}${letters[index]}. ${option.label}` },
+          type: isOn ? "primary" : "default",
+          width: "fill",
+          margin: "8px 0 4px 0",
+          behaviors: [
+            {
+              type: "callback",
+              value: {
+                clarify_id: pending.id,
+                toggle: option.value,
+              },
+            },
+          ],
+        };
+      }),
+      {
+        tag: "button",
+        text: { tag: "plain_text", content: "✅ 确认选择" },
+        type: "primary",
+        width: "fill",
+        margin: "12px 0 0 0",
+        behaviors: [
+          {
+            type: "callback",
+            value: {
+              clarify_id: pending.id,
+              confirm: true,
+            },
+          },
+        ],
+      },
+    ];
+    await this.transport.updateCard(messageId, {
+      schema: "2.0",
+      header: {
+        title: { tag: "plain_text", content: "需要你多选确认" },
+        template: "blue",
+      },
+      body: {
+        direction: "vertical",
+        padding: "12px 12px 16px 12px",
+        elements,
+      },
+    });
   }
 }

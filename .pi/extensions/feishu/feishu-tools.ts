@@ -32,6 +32,7 @@ export function makeAskFeishuTool(deps: FeishuCustomToolDeps): ToolDefinition {
       "**当你需要用户做选择/确认时用它**——比如「要沉淀成知识页吗」「选 A 还是 B」\n" +
       "「好多了还是还那样」。不要自己构造卡片 JSON，用这个工具。\n" +
       "想让他自由回答时传 allow_input=true（卡片底部会加一个输入框）。\n" +
+      "想让他多选时传 allow_multi=true（选项变复选框，点选后确认，返回逗号分隔）。\n" +
       "仅当对话通过飞书远程进行时使用；本机 TUI 会话请改用 questionnaire。",
     promptSnippet:
       "Need the Feishu user to pick/confirm → ask_feishu sends an interactive button card (with optional free-text input) and waits.",
@@ -41,8 +42,9 @@ export function makeAskFeishuTool(deps: FeishuCustomToolDeps): ToolDefinition {
         description: "选项列表",
       }),
       allow_input: Type.Optional(Type.Boolean({ description: "是否在卡片底部加自由输入框（默认 false）" })),
+      allow_multi: Type.Optional(Type.Boolean({ description: "是否允许多选（默认 false，多选时选项变复选框，最后点确认提交）" })),
     }),
-    async execute(_toolCallId, params: { question: string; choices: string[]; allow_input?: boolean }) {
+    async execute(_toolCallId, params: { question: string; choices: string[]; allow_input?: boolean; allow_multi?: boolean }) {
       if (deps.clarify.hasPending) {
         return textResult("已有等待中的澄清请求，先处理完那个。");
       }
@@ -59,7 +61,20 @@ export function makeAskFeishuTool(deps: FeishuCustomToolDeps): ToolDefinition {
         label: c,
       }));
       try {
-        const choice = await deps.clarify.ask(chatId, params.question, options, 300_000, Boolean(params.allow_input));
+        const choice = await deps.clarify.ask(
+          chatId,
+          params.question,
+          options,
+          300_000,
+          Boolean(params.allow_input),
+          Boolean(params.allow_multi),
+        );
+        if (params.allow_multi) {
+          // 多选：choice 是逗号分隔的 value 列表，拼 label 展示
+          const values = choice.split(",").filter(Boolean);
+          const labels = values.map((v) => options.find((o) => o.value === v)?.label ?? v);
+          return textResult(`用户多选：${labels.join("、")}（${choice}）`);
+        }
         const label = options.find((o) => o.value === choice)?.label ?? choice;
         return textResult(`用户选择：${label}（${choice}）`);
       } catch (error) {

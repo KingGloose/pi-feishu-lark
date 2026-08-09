@@ -171,30 +171,41 @@ export default function feishuExtension(pi: ExtensionAPI) {
       }
     });
     transport = new FeishuTransport(cfg, (msg) => messageHandler.handle(msg), async (action) => {
-      // 澄清卡回调：按钮 value 携带 clarify_id + choice；
+      // 澄清卡回调：按钮 value 携带 clarify_id + choice/toggle/confirm；
       // 输入框回调 action.input_value 携带用户输入 + value.free_input 标记
       const clarifyId = (action.value as any)?.clarify_id || (action.value as any)?.clarifyId;
       if (clarifyId) {
         const isFreeInput = Boolean((action.value as any)?.free_input);
+        const isToggle = Boolean((action.value as any)?.toggle);
+        const isConfirm = Boolean((action.value as any)?.confirm);
         const inputValue = isFreeInput ? (action as any).input_value : undefined;
         const choice = isFreeInput
           ? ""
           : (action.value as any)?.choice
+            ?? (action.value as any)?.toggle
+            ?? (action.value as any)?.confirm
             ?? (action as any).option
             ?? (action as any).select
             ?? "";
         const handled = await clarify.handleAction({
           clarifyId: String(clarifyId),
-          choice: String(choice),
+          choice: isConfirm ? "" : String(choice),
           inputValue: inputValue != null ? String(inputValue) : undefined,
+          toggle: isToggle ? String(choice) : undefined,
+          confirm: isConfirm || undefined,
           messageId: action.messageId,
         });
         if (handled) {
           debugLog("feishu.clarify.card_handled", {
             clarifyId,
             choice,
+            toggle: isToggle ? String(choice) : undefined,
             freeInput: isFreeInput ? String(inputValue).slice(0, 80) : undefined,
           });
+          if (isToggle) {
+            // 多选切换：卡片已由 refreshMultiCard 更新，回调返回空（不覆盖）
+            return;
+          }
           return {
             schema: "2.0",
             body: {
