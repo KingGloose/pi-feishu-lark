@@ -4,7 +4,7 @@
  * 思路移植自 pi-feishu-bridge 的 tool-tracker + card-renderer：
  * - 工具步骤状态机（running / success / error），参数脱敏 + 人类可读格式化
  * - 推理轮次按出现顺序与工具交替排成时间线
- * - 默认展开，完成后可折叠
+ * - 默认折叠，用户可展开查看过程
  *
  * 渲染目标：飞书 interactive 卡（1.0 schema），支持 div / lark_md / collapsible_panel。
  */

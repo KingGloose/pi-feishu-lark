@@ -28,10 +28,10 @@ export class PanelCard {
     private readonly replyToMessageId: string,
   ) {}
 
-  /** 发送第一张面板卡 */
+  /** 发送第一张面板卡（默认折叠，用户可展开看过程） */
   async start(): Promise<void> {
     try {
-      const card = this.buildCard(true);
+      const card = this.buildCard(false);
       this.cardMessageId = await this.transport.replyCard(this.replyToMessageId, card);
       debugLog("feishu.panel.started", { cardMessageId: this.cardMessageId });
     } catch (error) {
@@ -111,7 +111,7 @@ export class PanelCard {
     if (this.closed || !this.cardMessageId) return;
     this.lastRendered = Date.now();
     try {
-      await this.transport.updateCard(this.cardMessageId, this.buildCard(true));
+      await this.transport.updateCard(this.cardMessageId, this.buildCard(false));
     } catch (error) {
       debugLog("feishu.panel.refresh_error", {
         error: error instanceof Error ? error.message : String(error),
