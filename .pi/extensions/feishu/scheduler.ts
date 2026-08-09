@@ -37,14 +37,18 @@ const CHECK_INTERVAL_MS = 60_000;      // 每分钟检查一次
 const DAILY_HOUR = 9;
 const DAILY_MINUTE = 30;
 const DAILY_DEADLINE_HOUR = 11;        // 过了 11 点当天不再补发
+const DIGEST_HOUR = 6;
+const DIGEST_MINUTE = 30;              // 每日记忆整理 06:30
 const COMPANION_MIN_MS = 30 * 60_000;  // 伙伴最小间隔 30 分钟
 const COMPANION_MAX_MS = 120 * 60_000; // 伙伴最大间隔 120 分钟
 
 // 测试模式：环境变量覆盖触发时间，测完去掉即可恢复正式节奏。
 //   KG_SCHED_DAILY_SECS=<秒>    启动后 N 秒触发一次日报
 //   KG_SCHED_COMPANION_SECS=<秒> 启动后 N 秒触发一次伙伴
+//   KG_SCHED_DIGEST_SECS=<秒>   启动后 N 秒触发一次记忆整理
 const TEST_DAILY_SECS = Number(process.env.KG_SCHED_DAILY_SECS || 0);
 const TEST_COMPANION_SECS = Number(process.env.KG_SCHED_COMPANION_SECS || 0);
+const TEST_DIGEST_SECS = Number(process.env.KG_SCHED_DIGEST_SECS || 0);
 
 const DAILY_PROMPT = [
   "日报时间。读 skills/kg-daily-report/SKILL.md 并完整按它执行。",
@@ -60,14 +64,27 @@ const COMPANION_PROMPT = [
   "can_talk 是 true 也要自己判断值不值得开口 —— 没料就同样安静结束。",
 ].join("");
 
+const DIGEST_PROMPT = [
+  "每日记忆整理时间。这是内部任务，不需要发消息给用户。",
+  "1. 跑 `python3 scripts/lib/storyline_tool.py digest --auto`",
+  "2. 读生成的 narrative/episodes/昨天的.md，快速扫一眼昨天发生了什么",
+  "3. 判断是否要推进/新建叙事线：",
+  "   - 新episode延续已有线 → storyline_tool.py advance <id> <进展>",
+  "   - 明显新主题且不归入任何线 → create",
+  "   - 不要为琐碎细节建线，克制",
+  "4. 结束。不主动发消息，不打扰。",
+].join("");
+
 export class Scheduler {
   private timer: ReturnType<typeof setInterval> | undefined;
   private lastDailyDay = "";
+  private lastDigestDay = "";
   private lastCompanionAt = 0;
   private nextCompanionGapMs = 0;
   private running = false;
   private readonly startedAt = Date.now();
   private companionTestFired = false;
+  private digestTestFired = false;
 
   constructor(private readonly conversations: ConversationManager) {}
 
@@ -121,6 +138,11 @@ export class Scheduler {
         await this.fireCompanion();
         return;
       }
+      if (TEST_DIGEST_SECS > 0 && sinceStart >= TEST_DIGEST_SECS * 1000 && !this.digestTestFired) {
+        this.digestTestFired = true;
+        await this.fireDigest();
+        return;
+      }
 
       // ── 日报: 9:30 到 11:00 之间,每天一次 ──
       if (this.lastDailyDay !== localDay) {
@@ -132,6 +154,16 @@ export class Scheduler {
         if (inWindow) {
           this.lastDailyDay = localDay;
           await this.fireDaily();
+        }
+      }
+
+      // ── 每日记忆整理: 06:30,每天一次(内部任务,不打扰用户) ──
+      if (this.lastDigestDay !== localDay) {
+        const h = now.getHours();
+        const m = now.getMinutes();
+        if (h === DIGEST_HOUR && m >= DIGEST_MINUTE) {
+          this.lastDigestDay = localDay;
+          await this.fireDigest();
         }
       }
 
@@ -156,6 +188,19 @@ export class Scheduler {
       await this.conversations.prompt(key, DAILY_PROMPT, async () => {});
     } catch (e) {
       debugLog("feishu.scheduler.daily_error", { error: e instanceof Error ? e.message : String(e) });
+    }
+  }
+
+  private async fireDigest() {
+    const key = this.targetKey();
+    if (!key) return;
+    debugLog("feishu.scheduler.digest_fire", { key });
+    try {
+      // 用干净上下文跑记忆整理（内部任务）
+      await this.conversations.newConversation(key, async () => {});
+      await this.conversations.prompt(key, DIGEST_PROMPT, async () => {});
+    } catch (e) {
+      debugLog("feishu.scheduler.digest_error", { error: e instanceof Error ? e.message : String(e) });
     }
   }
 
