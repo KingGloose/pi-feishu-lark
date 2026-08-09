@@ -14,7 +14,8 @@ export type BotCommand =
   | { name: "reload" }
   | { name: "compact" }
   | { name: "session" }
-  | { name: "config"; key?: string; value?: string; clearTarget?: string };
+  | { name: "config"; key?: string; value?: string; clearTarget?: string }
+  | { name: "cog"; mode: "think" | "rank" | "plain"; text: string };
 
 type PostBody = {
   title?: string;
@@ -180,6 +181,11 @@ export function parseBotCommand(text: string): BotCommand | undefined {
   if (thinkMatch) {
     return { name: "think", level: thinkMatch[1]?.trim() };
   }
+  // /kg: 认知命令 —— think(下钻)/rank(降维)/plain(白话)
+  const kgMatch = trimmed.match(/^\/kg:(think|rank|plain)\s+(.+)$/s);
+  if (kgMatch) {
+    return { name: "cog", mode: kgMatch[1] as "think" | "rank" | "plain", text: kgMatch[2].trim() };
+  }
   const configMatch = trimmed.match(/^\/config(?:\s+(.+))?$/s);
   if (configMatch) {
     const rest = (configMatch[1] || "").trim();
@@ -214,6 +220,9 @@ export function getCommandList(): string {
     "/compact — 压缩上下文，省 token",
     "/session — 查看会话元信息（名称/ID/token/上下文占比）",
     "/think <off|low|medium|high> — 设置推理级别",
+    "/kg:think <内容> — 往下钻：持续追问「为什么」到本质",
+    "/kg:rank <领域> — 降维：压到 2-3 条生成现象的线",
+    "/kg:plain <概念> — 白话：讲到你能复述",
   ].join("\n");
 }
 

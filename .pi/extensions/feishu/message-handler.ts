@@ -335,6 +335,33 @@ export class FeishuMessageHandler {
       return true;
     }
 
+    if (command.name === "cog") {
+      // 认知命令：把方法骨架注入当前会话，让 AI 用对应方式处理内容
+      const methods: Record<string, string> = {
+        think: [
+          "用「下钻」方法处理下面内容：每往下一层只回答「为什么会这样」，不是「还有什么」。",
+          "每层尽量换一个更底层的框架（社会→心理→生物/物理→逻辑）。",
+          "钻到一层点出这层里还没解决的矛盾，那是下一层的入口。",
+          "到底标志：同义反复 / 人性硬结构 / 物理定律 / 逻辑本身 / 悖论。浅三层深六七层，自己判断。",
+        ].join(" "),
+        rank: [
+          "用「降维」方法处理下面领域：把整个领域压到 2-3 条「生成现象的线」，",
+          "即少数几条底层机制，能解释该领域大部分现象。别列清单，找生成器。",
+        ].join(" "),
+        plain: [
+          "用「白话」方法处理下面概念：用大白话讲到对方能复述给朋友。",
+          "优先日常类比，避开术语堆砌；讲完可以用一句话自测能否复述。",
+        ].join(" "),
+      };
+      await transport.replyText(msg.messageId, `⏳ /kg:${command.mode} 处理中…`);
+      await this.conversations.prompt(
+        key,
+        `${methods[command.mode]}\n\n内容：${command.text}`,
+        async () => {},
+      );
+      return true;
+    }
+
     if (command.name === "status") {
       const st = this.conversations.getStatus(key);
       const ctx = await this.conversations.getContextStatus(key);
