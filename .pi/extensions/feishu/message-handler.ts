@@ -82,6 +82,11 @@ export class FeishuMessageHandler {
     const transport = this.getTransport();
     if (!transport) return;
 
+    // 用户主动发消息 = 不需要再追日记（标记 replied，避免 30 分钟后再打扰）
+    if (msg.messageType === "text" && msg.content) {
+      this.markDiaryRepliedIfActive();
+    }
+
     let handledMsg = false;
     try {
       debugLog("feishu.handler.enter", { messageId: msg.messageId, seen: this.seen.has(msg.messageId) });
@@ -598,4 +603,26 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, timeoutMes
   } finally {
     if (timer) clearTimeout(timer);
   }
+}
+
+/**
+ * 用户主动发消息 → 若当天有活跃的日记提醒（未回复），标记 replied。
+ * 避免 AI 没来得及更新状态时，30 分钟后还追问。
+ */
+function markDiaryRepliedIfActive(this: unknown): void {
+  try {
+    const { homedir } = require("node:os") as typeof import("node:os");
+    const { readFileSync, writeFileSync, mkdirSync } = require("node:fs") as typeof import("node:fs");
+    const { join } = require("node:path") as typeof import("node:path");
+    const statePath = join(homedir(), ".kg-agent-config", "diary-reminder.json");
+    let state: { date?: string; sent_count?: number; replied?: boolean } = {};
+    try {
+      state = JSON.parse(readFileSync(statePath, "utf-8"));
+    } catch {}
+    if (state.date && state.sent_count && !state.replied) {
+      state.replied = true;
+      mkdirSync(join(homedir(), ".kg-agent-config"), { recursive: true });
+      writeFileSync(statePath, JSON.stringify(state, null, 2), "utf-8");
+    }
+  } catch {}
 }
