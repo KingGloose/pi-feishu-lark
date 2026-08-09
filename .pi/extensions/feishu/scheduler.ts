@@ -39,6 +39,8 @@ const DAILY_MINUTE = 30;
 const DAILY_DEADLINE_HOUR = 11;        // 过了 11 点当天不再补发
 const DIGEST_HOUR = 6;
 const DIGEST_MINUTE = 30;              // 每日记忆整理 06:30
+const WEEKLY_HOUR = 20;
+const WEEKLY_MINUTE = 0;               // 周报朋友来信 周日 20:00
 const COMPANION_MIN_MS = 30 * 60_000;  // 伙伴最小间隔 30 分钟
 const COMPANION_MAX_MS = 120 * 60_000; // 伙伴最大间隔 120 分钟
 
@@ -75,10 +77,17 @@ const DIGEST_PROMPT = [
   "4. 结束。不主动发消息，不打扰。",
 ].join("");
 
+const WEEKLY_PROMPT = [
+  "周日到了，写本周的「朋友来信」。读 skills/kg-weekly-report/SKILL.md 并完整按它执行。",
+  "这是一封懂他的朋友写的信，不是工作报告。",
+  "写完用 send_report.py 发到私聊。",
+].join("");
+
 export class Scheduler {
   private timer: ReturnType<typeof setInterval> | undefined;
   private lastDailyDay = "";
   private lastDigestDay = "";
+  private lastWeeklyDay = "";
   private lastCompanionAt = 0;
   private nextCompanionGapMs = 0;
   private running = false;
@@ -167,6 +176,16 @@ export class Scheduler {
         }
       }
 
+      // ── 周报朋友来信: 周日 20:00,每周一次 ──
+      if (this.lastWeeklyDay !== localDay) {
+        const h = now.getHours();
+        const m = now.getMinutes();
+        if (now.getDay() === 0 && h === WEEKLY_HOUR && m >= WEEKLY_MINUTE) {
+          this.lastWeeklyDay = localDay;
+          await this.fireWeekly();
+        }
+      }
+
       // ── 伙伴: 距上次超过随机间隔 ──
       if (Date.now() - this.lastCompanionAt >= this.nextCompanionGapMs) {
         this.lastCompanionAt = Date.now();
@@ -188,6 +207,18 @@ export class Scheduler {
       await this.conversations.prompt(key, DAILY_PROMPT, async () => {});
     } catch (e) {
       debugLog("feishu.scheduler.daily_error", { error: e instanceof Error ? e.message : String(e) });
+    }
+  }
+
+  private async fireWeekly() {
+    const key = this.targetKey();
+    if (!key) return;
+    debugLog("feishu.scheduler.weekly_fire", { key });
+    try {
+      await this.conversations.newConversation(key, async () => {});
+      await this.conversations.prompt(key, WEEKLY_PROMPT, async () => {});
+    } catch (e) {
+      debugLog("feishu.scheduler.weekly_error", { error: e instanceof Error ? e.message : String(e) });
     }
   }
 
