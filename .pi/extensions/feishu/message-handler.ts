@@ -83,8 +83,8 @@ export class FeishuMessageHandler {
     if (!transport) return;
 
     // 用户主动发消息 = 不需要再追日记（标记 replied，避免 30 分钟后再打扰）
-    if (msg.messageType === "text" && msg.content) {
-      this.markDiaryRepliedIfActive();
+    if (msg.msgType === "text" && msg.content) {
+      markDiaryRepliedIfActive();
     }
 
     let handledMsg = false;
@@ -609,7 +609,7 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, timeoutMes
  * 用户主动发消息 → 若当天有活跃的日记提醒（未回复），标记 replied。
  * 避免 AI 没来得及更新状态时，30 分钟后还追问。
  */
-function markDiaryRepliedIfActive(this: unknown): void {
+function markDiaryRepliedIfActive(): void {
   try {
     const { homedir } = require("node:os") as typeof import("node:os");
     const { readFileSync, writeFileSync, mkdirSync } = require("node:fs") as typeof import("node:fs");
