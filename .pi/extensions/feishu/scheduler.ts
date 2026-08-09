@@ -27,7 +27,7 @@
  * 触发后 AI 自己读 SKILL.md、跑脚本、调 send_report.py 发送,
  * 调度器只负责「到点注入 prompt」,不参与生成和发送。
  */
-import { readFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ConversationManager } from "./conversation-manager.js";
@@ -41,6 +41,10 @@ const DIGEST_HOUR = 6;
 const DIGEST_MINUTE = 30;              // 每日记忆整理 06:30
 const WEEKLY_HOUR = 20;
 const WEEKLY_MINUTE = 0;               // 周报朋友来信 周日 20:00
+const DIARY_HOUR = 23;
+const DIARY_MINUTE = 0;                // 日记引导提醒 23:00
+const DIARY_MAX_ATTEMPTS = 3;          // 最多问 3 次
+const DIARY_RETRY_MINUTES = 30;        // 每 30 分钟追问一次
 const COMPANION_MIN_MS = 25 * 60_000;  // 伙伴最小间隔 25 分钟
 const COMPANION_MAX_MS = 80 * 60_000; // 伙伴最大间隔 80 分钟
 
@@ -83,11 +87,28 @@ const WEEKLY_PROMPT = [
   "写完用 send_report.py 发到私聊。",
 ].join("");
 
+const DIARY_PROMPT = [
+  "日记时间（晚上引导回忆）。你现在要做的：",
+  "1. 先读今天的素材：`daily/<今天>/` 里的 companion.jsonl / ledger.jsonl / notifications.jsonl / health.json，",
+  "   以及 narrative/episodes/今天的.md（如果有），知道今天发生了什么。",
+  "2. 发一条**像朋友一样**的消息引导他回忆今天（不要模板化，不要列清单）：",
+  "   - 从今天真实发生的事里挑 1-2 个具体的点切入（「今天外卖点了不少呀」「下午那个排期后来定了吗」）",
+  "   - 语气自然轻松，像睡前聊天，用派可的声音（语气词+适度颜文字）",
+  "   - 让他有话说，不要问「今天过得怎么样」这种空泛问题",
+  "3. 等他回复。他聊了 → 像朋友一样回应，引导他多讲几句。",
+  "4. 聊完（他明显聊完了/或深夜）→ 把今晚对话整理成一篇简短日记：",
+  "   `python3 scripts/lib/storyline_tool.py digest --date <今天>` 后，",
+  "   把日记追加写入 `daily/<今天>/diary.md`（人读格式：今天发生了什么、他的感受、未完成的事）",
+  "5. 更新状态：把 ~/.kg-agent-config/diary-reminder.json 的 replied 改成 true。",
+  "6. 如果这是第 2/3 次追问（他之前没回），开头要更轻（「还在忙呀？就问你一句…」），不要让他有压力。",
+].join("");
+
 export class Scheduler {
   private timer: ReturnType<typeof setInterval> | undefined;
   private lastDailyDay = "";
   private lastDigestDay = "";
   private lastWeeklyDay = "";
+  private lastDiaryDay = "";
   private lastCompanionAt = 0;
   private nextCompanionGapMs = 0;
   private running = false;
@@ -186,6 +207,9 @@ export class Scheduler {
         }
       }
 
+      // ── 日记引导提醒: 23:00 起, 每 30 分钟追问, 最多 3 次 ──
+      await this.tryDiaryReminder(localDay, now);
+
       // ── 伙伴: 距上次超过随机间隔 ──
       if (Date.now() - this.lastCompanionAt >= this.nextCompanionGapMs) {
         this.lastCompanionAt = Date.now();
@@ -219,6 +243,82 @@ export class Scheduler {
       await this.conversations.prompt(key, WEEKLY_PROMPT, async () => {});
     } catch (e) {
       debugLog("feishu.scheduler.weekly_error", { error: e instanceof Error ? e.message : String(e) });
+    }
+  }
+
+  /** 日记提醒状态机：23:00 起每 30 分钟问一次，最多 3 次，回复后停。 */
+  private async tryDiaryReminder(localDay: string, now: Date) {
+    // 还没到 23:00 不触发
+    const h = now.getHours();
+    const m = now.getMinutes();
+    if (h < DIARY_HOUR || (h === DIARY_HOUR && m < DIARY_MINUTE)) return;
+
+    const key = this.targetKey();
+    if (!key) return;
+
+    const state = this.loadDiaryState();
+    // 跨天重置
+    if (state.date !== localDay) {
+      state.date = localDay;
+      state.sent_count = 0;
+      state.last_sent_at = 0;
+      state.replied = false;
+    }
+    // 已回复或已问满 → 停
+    if (state.replied || state.sent_count >= DIARY_MAX_ATTEMPTS) {
+      this.lastDiaryDay = localDay;
+      return;
+    }
+
+    // 首次：23:00 发。追问：距上次 ≥ 30 分钟
+    const nowMs = Date.now();
+    const isFirst = state.sent_count === 0;
+    const retryDue = !isFirst && nowMs - state.last_sent_at >= DIARY_RETRY_MINUTES * 60_000;
+    if (!isFirst && !retryDue) return;
+
+    state.sent_count += 1;
+    state.last_sent_at = nowMs;
+    this.saveDiaryState(state);
+    this.lastDiaryDay = localDay;
+
+    debugLog("feishu.scheduler.diary_fire", {
+      key,
+      attempt: state.sent_count,
+      total: DIARY_MAX_ATTEMPTS,
+    });
+    try {
+      await this.conversations.newConversation(key, async () => {});
+      await this.conversations.prompt(key, DIARY_PROMPT, async () => {});
+    } catch (e) {
+      debugLog("feishu.scheduler.diary_error", { error: e instanceof Error ? e.message : String(e) });
+    }
+  }
+
+  private diaryStatePath(): string {
+    return join(homedir(), ".kg-agent-config", "diary-reminder.json");
+  }
+
+  private loadDiaryState(): { date: string; sent_count: number; last_sent_at: number; replied: boolean } {
+    try {
+      const raw = readFileSync(this.diaryStatePath(), "utf-8");
+      const d = JSON.parse(raw);
+      return {
+        date: String(d.date ?? ""),
+        sent_count: Number(d.sent_count ?? 0),
+        last_sent_at: Number(d.last_sent_at ?? 0),
+        replied: Boolean(d.replied),
+      };
+    } catch {
+      return { date: "", sent_count: 0, last_sent_at: 0, replied: false };
+    }
+  }
+
+  private saveDiaryState(state: { date: string; sent_count: number; last_sent_at: number; replied: boolean }) {
+    try {
+      mkdirSync(join(homedir(), ".kg-agent-config"), { recursive: true });
+      writeFileSync(this.diaryStatePath(), JSON.stringify(state, null, 2), "utf-8");
+    } catch (e) {
+      debugLog("feishu.scheduler.diary_state_error", { error: e instanceof Error ? e.message : String(e) });
     }
   }
 
