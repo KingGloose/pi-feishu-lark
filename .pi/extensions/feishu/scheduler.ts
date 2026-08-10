@@ -41,6 +41,8 @@ const DIGEST_HOUR = 6;
 const DIGEST_MINUTE = 30;              // 每日记忆整理 06:30
 const WEEKLY_HOUR = 20;
 const WEEKLY_MINUTE = 0;               // 周报朋友来信 周日 20:00
+const IDEA_HOUR = 19;
+const IDEA_MINUTE = 30;                // 灵感孵化器 周二 19:30
 const DIARY_HOUR = 23;
 const DIARY_MINUTE = 0;                // 日记引导提醒 23:00
 const DIARY_MAX_ATTEMPTS = 3;          // 最多问 3 次
@@ -87,6 +89,19 @@ const WEEKLY_PROMPT = [
   "写完用 send_report.py 发到私聊。",
 ].join("");
 
+const IDEA_PROMPT = [
+  "灵感孵化器时间。这是给你俩的灵感保鲜：",
+  "1. 跑 `KG_VAULT=<vault> python3 <skills>/kg-idea/scripts/idea.py next --random` 抽一个旧灵感",
+  "   （vault 路径从 resolve_vault 或 ~/.kg-agent-config/config.json 拿）",
+  "2. 看这个灵感的内容，判断：",
+  "   - 跟最近聊的事相关/有价值 → 用派可的语气发给他：\"有个灵感搁了 X 天了，要不要花 15 分钟聊聊？\"",
+  "     简述它是什么 + 为什么现在提（别催执行，是保鲜）",
+  "   - 明显没价值/过期 → 安静跳过，不打扰",
+  "3. 他回 → 正常聊；他不回 → 不追问。",
+  "4. 聊完（如果聊了）→ 把进展 append 回灵感：`idea.py append \"标题\" ...`。",
+  "保持创意的温度，不是催他干活。",
+].join("");
+
 const DIARY_PROMPT = [
   "日记时间（晚上引导回忆）。你现在要做的：",
   "1. 先读今天的素材：`daily/<今天>/` 里的 companion.jsonl / ledger.jsonl / notifications.jsonl / health.json，",
@@ -108,6 +123,7 @@ export class Scheduler {
   private lastDailyDay = "";
   private lastDigestDay = "";
   private lastWeeklyDay = "";
+  private lastIdeaDay = "";
   private lastDiaryDay = "";
   private lastCompanionAt = 0;
   private nextCompanionGapMs = 0;
@@ -207,6 +223,16 @@ export class Scheduler {
         }
       }
 
+      // ── 灵感孵化器: 周二 19:30,每周一次 ──
+      if (this.lastIdeaDay !== localDay) {
+        const h = now.getHours();
+        const m = now.getMinutes();
+        if (now.getDay() === 2 && h === IDEA_HOUR && m >= IDEA_MINUTE) {
+          this.lastIdeaDay = localDay;
+          await this.fireIdea();
+        }
+      }
+
       // ── 日记引导提醒: 23:00 起, 每 30 分钟追问, 最多 3 次 ──
       await this.tryDiaryReminder(localDay, now);
 
@@ -243,6 +269,18 @@ export class Scheduler {
       await this.conversations.prompt(key, WEEKLY_PROMPT, async () => {});
     } catch (e) {
       debugLog("feishu.scheduler.weekly_error", { error: e instanceof Error ? e.message : String(e) });
+    }
+  }
+
+  private async fireIdea() {
+    const key = this.targetKey();
+    if (!key) return;
+    debugLog("feishu.scheduler.idea_fire", { key });
+    try {
+      // 灵感孵化器：直接跑在现有会话上（方案B）
+      await this.conversations.prompt(key, IDEA_PROMPT, async () => {});
+    } catch (e) {
+      debugLog("feishu.scheduler.idea_error", { error: e instanceof Error ? e.message : String(e) });
     }
   }
 
