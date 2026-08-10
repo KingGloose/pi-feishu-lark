@@ -226,8 +226,8 @@ export class Scheduler {
     if (!key) return;
     debugLog("feishu.scheduler.daily_fire", { key });
     try {
-      // 每次新建干净上下文(日报是独立内容,不需要历史)
-      await this.conversations.newConversation(key, async () => {});
+      // 方案B：不换会话，直接在现有会话上跑任务，保留聊天上下文。
+      // 上下文过长由 pi 自动压缩（compaction.reserveTokens 配置触发阈值）。
       await this.conversations.prompt(key, DAILY_PROMPT, async () => {});
     } catch (e) {
       debugLog("feishu.scheduler.daily_error", { error: e instanceof Error ? e.message : String(e) });
@@ -239,7 +239,7 @@ export class Scheduler {
     if (!key) return;
     debugLog("feishu.scheduler.weekly_fire", { key });
     try {
-      await this.conversations.newConversation(key, async () => {});
+      // 方案B：不换会话，保留聊天上下文
       await this.conversations.prompt(key, WEEKLY_PROMPT, async () => {});
     } catch (e) {
       debugLog("feishu.scheduler.weekly_error", { error: e instanceof Error ? e.message : String(e) });
@@ -287,7 +287,7 @@ export class Scheduler {
       total: DIARY_MAX_ATTEMPTS,
     });
     try {
-      await this.conversations.newConversation(key, async () => {});
+      // 方案B：不换会话，保留聊天上下文
       await this.conversations.prompt(key, DIARY_PROMPT, async () => {});
     } catch (e) {
       debugLog("feishu.scheduler.diary_error", { error: e instanceof Error ? e.message : String(e) });
@@ -327,8 +327,7 @@ export class Scheduler {
     if (!key) return;
     debugLog("feishu.scheduler.digest_fire", { key });
     try {
-      // 用干净上下文跑记忆整理（内部任务）
-      await this.conversations.newConversation(key, async () => {});
+      // 方案B：不换会话，保留聊天上下文（内部任务直接在现有会话上跑）
       await this.conversations.prompt(key, DIGEST_PROMPT, async () => {});
     } catch (e) {
       debugLog("feishu.scheduler.digest_error", { error: e instanceof Error ? e.message : String(e) });
